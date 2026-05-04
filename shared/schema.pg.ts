@@ -23,6 +23,14 @@ export const projects = pgTable("projects", {
   envExample: text("env_example_json").notNull().default("[]"),
   blueprintId: integer("blueprint_id"),
   accessMode: text("access_mode").notNull().default("private"),
+  sourceProvider: text("source_provider").notNull().default("manual"),
+  sourceBranch: text("source_branch"),
+  sourceUrl: text("source_url"),
+  sourceDefaultBranch: text("source_default_branch"),
+  sourceVisibility: text("source_visibility"),
+  sourceLanguage: text("source_language"),
+  sourceUpdatedAt: bigint("source_updated_at", { mode: "number" }),
+  detectedConfig: text("detected_config_json").notNull().default("{}"),
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 

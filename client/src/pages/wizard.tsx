@@ -4,8 +4,6 @@ import { useLocation } from "wouter";
 import { PageShell } from "@/components/page-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -13,12 +11,14 @@ import { ProviderIcon, providerLabel } from "@/components/provider-icon";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Sparkles, GitBranch, Check, ChevronRight, ChevronLeft, Eye, EyeOff,
-  ShieldCheck, FlaskConical,
+  Sparkles, Check, ChevronRight, ChevronLeft, Eye, EyeOff,
+  FlaskConical,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import type { Project } from "@shared/schema";
+import {
+  GithubRepoPicker, type GhRepoSummary, type DetectionResult,
+} from "@/components/github-repo-picker";
 
 type Env = "test" | "demo" | "deploy";
 
@@ -28,67 +28,149 @@ const ENV_DESCRIPTION: Record<Env, string> = {
   deploy: "Production. Stable domain, full smoke + health checks.",
 };
 
+interface DetectionExtras {
+  detection: DetectionResult;
+  framework: string;
+  buildCommand: string;
+  outputDir: string;
+  needsDatabase: boolean;
+  ormDetected: string | null;
+  envExample: string[];
+  blueprintSlug: string | null;
+  recommendedProviders: string[];
+}
+
+function deriveExtras(d: DetectionResult): DetectionExtras {
+  const fwMap: Record<string, string> = {
+    "nextjs": "nextjs", "vite-react": "static", "react": "static", "static": "static",
+    "node": "node", "express": "node", "astro": "astro", "svelte": "static",
+    "fastapi": "node", "python": "node", "unknown": "node",
+  };
+  return {
+    detection: d,
+    framework: fwMap[d.framework] ?? "node",
+    buildCommand: d.buildCommand ?? (d.framework === "nextjs" ? "next build" : "npm run build"),
+    outputDir: d.outputDir ?? (d.framework === "nextjs" ? ".next" : "dist"),
+    needsDatabase: d.prisma.present || d.recommendedProviders.includes("neon"),
+    ormDetected: d.prisma.present ? "prisma" : null,
+    envExample: d.envSuggestions,
+    blueprintSlug: d.blueprintRecommendation,
+    recommendedProviders: d.recommendedProviders,
+  };
+}
+
 export default function Wizard() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
 
   const [step, setStep] = useState(0);
-  const [projectId, setProjectId] = useState<number | null>(null);
+  const [selectedRepo, setSelectedRepo] = useState<GhRepoSummary | null>(null);
+  const [selectedBranch, setSelectedBranch] = useState<string | null>(null);
+  const [detection, setDetection] = useState<DetectionResult | null>(null);
+
   const [environment, setEnvironment] = useState<Env>("test");
   const [blueprintSlug, setBlueprintSlug] = useState<string>("next-prisma-neon-vercel");
   const [providers, setProviders] = useState<string[]>(["github", "vercel", "neon", "prisma"]);
   const [revealValues, setRevealValues] = useState(false);
   const [liveMode, setLiveMode] = useState(false);
 
-  const projectsQ = useQuery<Project[]>({ queryKey: ["/api/projects"] });
   const blueprintsQ = useQuery<any[]>({ queryKey: ["/api/blueprints"] });
 
-  const project = useMemo(() => projectsQ.data?.find((p) => p.id === projectId) ?? null, [projectsQ.data, projectId]);
-  const blueprint = useMemo(() => blueprintsQ.data?.find((b) => b.slug === blueprintSlug) ?? null, [blueprintsQ.data, blueprintSlug]);
+  const extras = useMemo<DetectionExtras | null>(
+    () => (detection ? deriveExtras(detection) : null),
+    [detection],
+  );
 
-  /* Auto-select blueprint based on project framework */
+  const blueprint = useMemo(
+    () => blueprintsQ.data?.find((b) => b.slug === blueprintSlug) ?? null,
+    [blueprintsQ.data, blueprintSlug],
+  );
+
+  /* When detection arrives, pre-populate blueprint + providers from detection. */
   useEffect(() => {
-    if (!project || !blueprintsQ.data) return;
-    const candidate = blueprintsQ.data.find((b) => b.framework === project.framework);
-    if (candidate) {
-      setBlueprintSlug(candidate.slug);
-      setProviders(candidate.providers);
+    if (!extras || !blueprintsQ.data) return;
+    if (extras.blueprintSlug) {
+      const candidate = blueprintsQ.data.find((b) => b.slug === extras.blueprintSlug);
+      if (candidate) {
+        setBlueprintSlug(candidate.slug);
+        setProviders(candidate.providers);
+        return;
+      }
     }
-  }, [project?.id, blueprintsQ.data]);
+    const byFw = blueprintsQ.data.find((b) => b.framework === extras.framework);
+    if (byFw) {
+      setBlueprintSlug(byFw.slug);
+      setProviders(byFw.providers);
+    } else if (extras.recommendedProviders.length > 0) {
+      setProviders(extras.recommendedProviders);
+    }
+  }, [extras, blueprintsQ.data]);
 
-  /* env preview */
+  /* When repo changes default branch, pre-set the branch. */
+  useEffect(() => {
+    if (selectedRepo && !selectedBranch) setSelectedBranch(selectedRepo.defaultBranch);
+  }, [selectedRepo, selectedBranch]);
+
+  /* env preview — works with or without a project (uses framework + providers). */
   const envPreview = useQuery<any[]>({
-    queryKey: ["/api/preview/env", project?.framework, providers.join(",")],
-    enabled: !!project,
+    queryKey: ["/api/preview/env", extras?.framework, providers.join(",")],
+    enabled: !!extras,
     queryFn: async () => {
       const res = await apiRequest("POST", "/api/preview/env", {
-        framework: project?.framework, providers,
+        framework: extras?.framework, providers,
       });
       return res.json();
     },
   });
 
-  /* yaml preview */
   const ciPreview = useQuery<string>({
-    queryKey: ["/api/preview/ci", project?.framework, providers.join(",")],
-    enabled: !!project,
+    queryKey: ["/api/preview/ci", extras?.framework, providers.join(",")],
+    enabled: !!extras,
     queryFn: async () => {
       const res = await apiRequest("POST", "/api/preview/ci", {
-        framework: project?.framework, providers,
+        framework: extras?.framework, providers,
       });
       return res.text();
     },
   });
 
+  /* Project name derives from repo name. */
+  const projectName = selectedRepo?.name ?? "—";
+
   const createRun = useMutation({
     mutationFn: async () => {
-      const envVars = (envPreview.data ?? []).map((e) => ({
+      if (!selectedRepo || !selectedBranch || !extras) throw new Error("repo + branch required");
+      /* persist a project from the live repo selection. */
+      const projectBody = {
+        name: selectedRepo.name,
+        repo: selectedRepo.fullName,
+        framework: extras.framework,
+        buildCommand: extras.buildCommand,
+        outputDir: extras.outputDir,
+        rootDir: ".",
+        needsDatabase: extras.needsDatabase,
+        ormDetected: extras.ormDetected,
+        envExample: extras.envExample,
+        accessMode: "private",
+        sourceProvider: "github",
+        sourceBranch: selectedBranch,
+        sourceUrl: selectedRepo.url,
+        sourceDefaultBranch: selectedRepo.defaultBranch,
+        sourceVisibility: selectedRepo.private ? "private" : "public",
+        sourceLanguage: selectedRepo.language ?? null,
+        sourceUpdatedAt: selectedRepo.updatedAt ? new Date(selectedRepo.updatedAt).getTime() : null,
+        detectedConfig: extras.detection,
+      };
+      const projRes = await apiRequest("POST", "/api/projects", projectBody);
+      const project = await projRes.json();
+
+      const envVars = (envPreview.data ?? []).map((e: any) => ({
         key: e.key,
         value: e.source === "generated" ? "dop_•••••••••••••••" : `<from ${e.source}>`,
         source: e.source,
       }));
       const res = await apiRequest("POST", "/api/runs", {
-        projectId,
+        projectId: project.id,
         environment,
         mode: liveMode ? "live" : "dry-run",
         providers,
@@ -98,17 +180,25 @@ export default function Wizard() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/runs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
       toast({
         title: "Run created",
         description: `Pipeline queued in ${liveMode ? "LIVE" : "dry-run"} mode. Advance the stages on the run page.`,
       });
       navigate(`/runs/${data.id}`);
     },
+    onError: (err: any) => {
+      toast({
+        title: "Could not start run",
+        description: String(err?.message ?? err),
+        variant: "destructive",
+      });
+    },
   });
 
-  const steps = ["Project", "Environment", "Blueprint", "Providers", "Review"];
+  const steps = ["Repository", "Environment", "Blueprint", "Providers", "Review"];
   const canNext =
-    (step === 0 && !!projectId) ||
+    (step === 0 && !!selectedRepo && !!selectedBranch && !!detection) ||
     (step === 1 && !!environment) ||
     (step === 2 && !!blueprintSlug) ||
     (step === 3 && providers.length > 0) ||
@@ -118,7 +208,7 @@ export default function Wizard() {
     <PageShell
       eyebrow="Wizard"
       title="New deployment"
-      description="Five guided steps. We pre-fill almost everything from the repo and your blueprint."
+      description="Five guided steps. We pre-fill almost everything from the live repo and your blueprint."
       actions={
         <div className="flex items-center gap-3 rounded-md border border-border bg-card px-3 py-1.5">
           <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Mode</span>
@@ -133,7 +223,6 @@ export default function Wizard() {
         </div>
       }
     >
-      {/* Stepper */}
       <ol className="mb-6 flex items-center gap-2 text-xs flex-wrap">
         {steps.map((s, i) => (
           <li key={s} className="flex items-center gap-2">
@@ -160,11 +249,16 @@ export default function Wizard() {
       <Card>
         <CardContent className="p-6">
           {step === 0 && (
-            <StepProject
-              loading={projectsQ.isLoading}
-              projects={projectsQ.data ?? []}
-              selectedId={projectId}
-              onSelect={setProjectId}
+            <StepRepository
+              selectedRepo={selectedRepo}
+              selectedBranch={selectedBranch}
+              onSelectRepo={(r) => {
+                setSelectedRepo(r);
+                setSelectedBranch(r.defaultBranch);
+                setDetection(null);
+              }}
+              onSelectBranch={(b) => { setSelectedBranch(b); setDetection(null); }}
+              onDetected={setDetection}
             />
           )}
           {step === 1 && <StepEnvironment value={environment} onChange={setEnvironment} />}
@@ -173,6 +267,7 @@ export default function Wizard() {
               loading={blueprintsQ.isLoading}
               blueprints={blueprintsQ.data ?? []}
               selectedSlug={blueprintSlug}
+              recommended={extras?.blueprintSlug ?? null}
               onSelect={(slug) => {
                 setBlueprintSlug(slug);
                 const bp = blueprintsQ.data?.find((b) => b.slug === slug);
@@ -184,12 +279,15 @@ export default function Wizard() {
             <StepProviders
               value={providers}
               onChange={setProviders}
-              recommended={blueprint?.providers ?? []}
+              recommended={blueprint?.providers ?? extras?.recommendedProviders ?? []}
             />
           )}
           {step === 4 && (
             <StepReview
-              project={project}
+              projectName={projectName}
+              repoFullName={selectedRepo?.fullName ?? "—"}
+              branch={selectedBranch ?? "—"}
+              extras={extras}
               environment={environment}
               blueprint={blueprint}
               providers={providers}
@@ -221,7 +319,7 @@ export default function Wizard() {
         ) : (
           <Button
             onClick={() => createRun.mutate()}
-            disabled={!projectId || createRun.isPending}
+            disabled={!selectedRepo || !selectedBranch || !detection || createRun.isPending}
             className="gap-2"
             data-testid="button-run"
           >
@@ -233,57 +331,31 @@ export default function Wizard() {
   );
 }
 
-function StepProject({
-  loading, projects, selectedId, onSelect,
-}: { loading: boolean; projects: Project[]; selectedId: number | null; onSelect: (id: number) => void }) {
+function StepRepository({
+  selectedRepo, selectedBranch, onSelectRepo, onSelectBranch, onDetected,
+}: {
+  selectedRepo: GhRepoSummary | null;
+  selectedBranch: string | null;
+  onSelectRepo: (r: GhRepoSummary) => void;
+  onSelectBranch: (b: string) => void;
+  onDetected: (d: DetectionResult | null) => void;
+}) {
   return (
     <div>
       <CardHeader className="px-0 pt-0">
-        <CardTitle className="text-sm">Step 1 — pick a repository</CardTitle>
+        <CardTitle className="text-sm">Step 1 — choose a live GitHub repository</CardTitle>
       </CardHeader>
       <p className="text-sm text-muted-foreground mb-4">
-        These are repos already imported into the workspace. Use <code className="font-mono text-foreground">gh repo list</code> in the sandbox to add more.
+        Pulled live from <code className="font-mono text-foreground">/user/repos</code> via the authenticated <code className="font-mono text-foreground">gh</code> CLI.
+        Your token never leaves the server. After you pick a branch, we'll inspect the repo and pre-fill build, providers, and env vars.
       </p>
-      {loading ? (
-        <Skeleton className="h-40 w-full" />
-      ) : (
-        <ul className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {projects.map((p) => (
-            <li key={p.id}>
-              <button
-                onClick={() => onSelect(p.id)}
-                className={cn(
-                  "w-full text-left rounded-lg border p-4 transition-colors",
-                  selectedId === p.id
-                    ? "border-primary bg-primary/5"
-                    : "border-border hover-elevate",
-                )}
-                data-testid={`option-project-${p.id}`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <div className="font-medium">{p.name}</div>
-                  {selectedId === p.id && <Check className="h-4 w-4 text-primary" />}
-                </div>
-                <div className="text-[11px] font-mono text-muted-foreground inline-flex items-center gap-1">
-                  <GitBranch className="h-3 w-3" /> {p.repo}
-                </div>
-                <div className="mt-3 flex gap-1.5 flex-wrap">
-                  <Badge variant="outline" className="text-[10px] font-mono">{p.framework}</Badge>
-                  {p.needsDatabase && <Badge variant="outline" className="text-[10px] font-mono">database</Badge>}
-                  {p.ormDetected && <Badge variant="outline" className="text-[10px] font-mono">{p.ormDetected}</Badge>}
-                </div>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="mt-6 rounded-md border border-dashed border-border bg-card/40 p-4 text-xs text-muted-foreground">
-        <div className="flex items-center gap-2 mb-1 text-foreground">
-          <ShieldCheck className="h-3.5 w-3.5 text-primary" /> Auto-detect summary
-        </div>
-        We read <code className="font-mono">package.json</code>, <code className="font-mono">prisma/schema.prisma</code>, and <code className="font-mono">.env.example</code> via <code className="font-mono">gh</code> CLI, then suggest a build command, output dir, and required env vars. You can override anything in step 5.
-      </div>
+      <GithubRepoPicker
+        selectedRepoFullName={selectedRepo?.fullName ?? null}
+        selectedBranch={selectedBranch}
+        onSelectRepo={onSelectRepo}
+        onSelectBranch={onSelectBranch}
+        onDetected={onDetected}
+      />
     </div>
   );
 }
@@ -318,15 +390,18 @@ function StepEnvironment({ value, onChange }: { value: Env; onChange: (e: Env) =
 }
 
 function StepBlueprint({
-  loading, blueprints, selectedSlug, onSelect,
-}: { loading: boolean; blueprints: any[]; selectedSlug: string; onSelect: (s: string) => void }) {
+  loading, blueprints, selectedSlug, recommended, onSelect,
+}: {
+  loading: boolean; blueprints: any[]; selectedSlug: string;
+  recommended: string | null; onSelect: (s: string) => void;
+}) {
   return (
     <div>
       <CardHeader className="px-0 pt-0">
         <CardTitle className="text-sm">Step 3 — choose a blueprint</CardTitle>
       </CardHeader>
       <p className="text-sm text-muted-foreground mb-4">
-        Blueprints are pre-wired stacks. Pick one to skip provider configuration entirely — every default is editable.
+        Blueprints are pre-wired stacks. {recommended && <>We've highlighted the one that matches your repo's framework.</>}
       </p>
       {loading ? (
         <Skeleton className="h-32 w-full" />
@@ -345,6 +420,7 @@ function StepBlueprint({
                 <div className="flex items-center justify-between mb-1">
                   <div className="font-medium">{b.name}</div>
                   <div className="flex items-center gap-2">
+                    {recommended === b.slug && <Badge className="text-[10px]" data-testid={`badge-detected-${b.slug}`}>auto-detected</Badge>}
                     {b.recommended && <Badge variant="outline" className="text-[10px]">recommended</Badge>}
                     {selectedSlug === b.slug && <Check className="h-4 w-4 text-primary" />}
                   </div>
@@ -376,7 +452,7 @@ function StepProviders({
         <CardTitle className="text-sm">Step 4 — providers</CardTitle>
       </CardHeader>
       <p className="text-sm text-muted-foreground mb-4">
-        We pre-selected the providers your blueprint needs. Toggle any optional provider on or off.
+        We pre-selected the providers your blueprint and detected stack need. Toggle any optional provider on or off.
       </p>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {all.map((p) => {
@@ -396,14 +472,14 @@ function StepProviders({
                 <div>
                   <div className="text-sm font-medium">{providerLabel(p)}</div>
                   <div className="text-[11px] text-muted-foreground">
-                    {p === "railway" ? "Optional. Manual CLI fallback." : isRecommended ? "Recommended for this blueprint." : "Optional"}
+                    {p === "railway" ? "Optional. Manual CLI fallback." : isRecommended ? "Recommended for this stack." : "Optional"}
                   </div>
                 </div>
               </div>
               <Switch
                 checked={on}
                 onCheckedChange={(checked) => {
-                  if (checked) onChange([...new Set([...value, p])]);
+                  if (checked) onChange(Array.from(new Set([...value, p])));
                   else onChange(value.filter((x) => x !== p));
                 }}
                 data-testid={`switch-provider-${p}`}
@@ -417,8 +493,8 @@ function StepProviders({
 }
 
 function StepReview({
-  project, environment, blueprint, providers, envPreview, ci,
-  revealValues, setRevealValues, liveMode,
+  projectName, repoFullName, branch, extras, environment, blueprint, providers,
+  envPreview, ci, revealValues, setRevealValues, liveMode,
 }: any) {
   return (
     <div className="space-y-6">
@@ -428,13 +504,15 @@ function StepReview({
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="space-y-2 lg:col-span-1">
-          <KV k="Project" v={project?.name ?? "—"} />
-          <KV k="Repo" v={project?.repo ?? "—"} mono />
-          <KV k="Environment" v={environment} mono upper />
-          <KV k="Blueprint" v={blueprint?.name ?? "—"} />
-          <KV k="Build cmd" v={project?.buildCommand ?? "—"} mono />
-          <KV k="Output dir" v={project?.outputDir ?? "—"} mono />
-          <KV k="Mode" v={liveMode ? "LIVE" : "DRY-RUN"} mono />
+          <KV k="Project" v={projectName} testid="kv-project" />
+          <KV k="Repo" v={repoFullName} mono testid="kv-repo" />
+          <KV k="Branch" v={branch} mono testid="kv-branch" />
+          <KV k="Framework" v={extras?.framework ?? "—"} mono testid="kv-framework" />
+          <KV k="Environment" v={environment} mono upper testid="kv-env" />
+          <KV k="Blueprint" v={blueprint?.name ?? "—"} testid="kv-blueprint" />
+          <KV k="Build cmd" v={extras?.buildCommand ?? "—"} mono testid="kv-build" />
+          <KV k="Output dir" v={extras?.outputDir ?? "—"} mono testid="kv-output" />
+          <KV k="Mode" v={liveMode ? "LIVE" : "DRY-RUN"} mono testid="kv-mode" />
         </div>
 
         <div className="lg:col-span-2">
@@ -511,9 +589,9 @@ function StepReview({
   );
 }
 
-function KV({ k, v, mono, upper }: { k: string; v: string; mono?: boolean; upper?: boolean }) {
+function KV({ k, v, mono, upper, testid }: { k: string; v: string; mono?: boolean; upper?: boolean; testid?: string }) {
   return (
-    <div className="flex items-center justify-between rounded-md border border-border px-3 py-2 bg-card/40">
+    <div className="flex items-center justify-between rounded-md border border-border px-3 py-2 bg-card/40" data-testid={testid}>
       <span className="text-[11px] uppercase tracking-wide text-muted-foreground">{k}</span>
       <span className={cn("text-xs", mono && "font-mono", upper && "uppercase")}>{v}</span>
     </div>

@@ -16,6 +16,9 @@ import {
   fixbotDiagnose, fixbotGitHubAction, fixbotVercelAction, fixbotNeonAction,
   fixbotPrismaAction, fixbotSmokeTest, fixbotEscalate, type ApplyContext,
 } from "./fixbot";
+import {
+  ghViewer, ghListRepos, ghListBranches, ghDetectConfig, GhError,
+} from "./github";
 
 /* Helper: parse JSON columns safely */
 function parseJSON<T>(raw: string | null | undefined, fallback: T): T {
@@ -51,6 +54,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const updated = await storage.setProviderMode(key, mode);
     if (!updated) return res.status(404).json({ error: "provider not found" });
     res.json(updated);
+  });
+
+  /* ----------------------------- github --------------------------------- */
+  /**
+   * Live GitHub integration for the New Deploy wizard. All calls go through
+   * the authenticated `gh` CLI server-side — credentials never leave the
+   * server. Each handler maps GhError codes to a stable response shape so the
+   * UI can render a useful empty/error state.
+   */
+  function sendGhError(res: Response, err: unknown) {
+    if (err instanceof GhError) {
+      return res.status(err.status).json({ error: err.message, code: err.code, detail: err.detail });
+    }
+    const msg = (err as any)?.message ?? String(err);
+    return res.status(500).json({ error: msg, code: "unknown" });
+  }
+
+  app.get("/api/github/viewer", async (_req, res) => {
+    try { res.json({ ok: true, viewer: await ghViewer() }); }
+    catch (err) { sendGhError(res, err); }
+  });
+
+  app.get("/api/github/repos", async (req, res) => {
+    try {
+      const repos = await ghListRepos();
+      const q = String(req.query.q ?? "").toLowerCase();
+      const filtered = q
+        ? repos.filter((r) =>
+            r.fullName.toLowerCase().includes(q) ||
+            (r.description ?? "").toLowerCase().includes(q) ||
+            (r.language ?? "").toLowerCase().includes(q),
+          )
+        : repos;
+      res.json({ ok: true, repos: filtered, total: repos.length });
+    } catch (err) { sendGhError(res, err); }
+  });
+
+  app.get("/api/github/repos/:owner/:repo/branches", async (req, res) => {
+    const repo = `${req.params.owner}/${req.params.repo}`;
+    try { res.json({ ok: true, repo, branches: await ghListBranches(repo) }); }
+    catch (err) { sendGhError(res, err); }
+  });
+
+  app.get("/api/github/repos/:owner/:repo/detect", async (req, res) => {
+    const repo = `${req.params.owner}/${req.params.repo}`;
+    const branch = String(req.query.branch ?? "").trim();
+    if (!branch) return res.status(400).json({ error: "branch query parameter required", code: "bad-request" });
+    try {
+      const detection = await ghDetectConfig(repo, branch);
+      res.json({ ok: true, repo, branch, detection });
+    } catch (err) { sendGhError(res, err); }
   });
 
   /* --------------------------- blueprints -------------------------------- */
@@ -92,6 +146,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       envExample: typeof req.body.envExample === "string"
         ? req.body.envExample
         : JSON.stringify(req.body.envExample ?? []),
+      detectedConfig: typeof req.body.detectedConfig === "string"
+        ? req.body.detectedConfig
+        : JSON.stringify(req.body.detectedConfig ?? {}),
     });
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const created = await storage.createProject(parsed.data);

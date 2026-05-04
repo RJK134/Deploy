@@ -120,6 +120,14 @@ CREATE TABLE IF NOT EXISTS projects (
   env_example_json TEXT NOT NULL DEFAULT '[]',
   blueprint_id INTEGER,
   access_mode TEXT NOT NULL DEFAULT 'private',
+  source_provider TEXT NOT NULL DEFAULT 'manual',
+  source_branch TEXT,
+  source_url TEXT,
+  source_default_branch TEXT,
+  source_visibility TEXT,
+  source_language TEXT,
+  source_updated_at INTEGER,
+  detected_config_json TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS runs (
@@ -228,4 +236,29 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at INTEGER NOT NULL
 );
 `);
+
+  /* Idempotent column adds for projects (older DBs). */
+  const projectAdds: Array<[string, string]> = [
+    ["source_provider", "TEXT NOT NULL DEFAULT 'manual'"],
+    ["source_branch", "TEXT"],
+    ["source_url", "TEXT"],
+    ["source_default_branch", "TEXT"],
+    ["source_visibility", "TEXT"],
+    ["source_language", "TEXT"],
+    ["source_updated_at", "INTEGER"],
+    ["detected_config_json", "TEXT NOT NULL DEFAULT '{}'"],
+  ];
+  const existingCols = sqlite
+    .prepare("PRAGMA table_info(projects)")
+    .all()
+    .map((c: any) => c.name as string);
+  for (const [col, type] of projectAdds) {
+    if (!existingCols.includes(col)) {
+      try {
+        sqlite.exec(`ALTER TABLE projects ADD COLUMN ${col} ${type};`);
+      } catch (err) {
+        console.warn(`[db] could not add column ${col}:`, err);
+      }
+    }
+  }
 }

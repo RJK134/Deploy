@@ -1,0 +1,514 @@
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import {
+  GitBranch, Search, Lock, Globe, Star, AlertTriangle, RefreshCw,
+  Check, Github, Sparkles, Database, FileCode, Container, FlaskConical,
+} from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
+import { apiRequest } from "@/lib/queryClient";
+
+export interface GhRepoSummary {
+  id: number;
+  name: string;
+  fullName: string;
+  owner: string;
+  description: string | null;
+  url: string;
+  cloneUrl: string;
+  defaultBranch: string;
+  private: boolean;
+  fork: boolean;
+  archived: boolean;
+  language: string | null;
+  pushedAt: string | null;
+  updatedAt: string | null;
+  topics: string[];
+}
+export interface GhBranch {
+  name: string;
+  protected: boolean;
+  sha: string;
+}
+export interface DetectionResult {
+  framework: string;
+  packageManager: string;
+  buildCommand: string | null;
+  devCommand: string | null;
+  startCommand: string | null;
+  outputDir: string | null;
+  prisma: { present: boolean; schemaPath: string | null; migrationsPath: string | null };
+  docker: { dockerfile: boolean; compose: boolean };
+  vercel: { configFile: string | null };
+  githubActions: { workflowPaths: string[] };
+  envExample: { path: string | null; keys: string[] };
+  envSuggestions: string[];
+  blueprintRecommendation: string | null;
+  recommendedProviders: string[];
+  language: string | null;
+  notes: string[];
+}
+
+type Visibility = "all" | "public" | "private";
+type SortKey = "recent" | "name";
+
+interface RepoPayload { ok: boolean; repos: GhRepoSummary[]; total: number; }
+interface BranchPayload { ok: boolean; repo: string; branches: GhBranch[]; }
+interface DetectPayload { ok: boolean; repo: string; branch: string; detection: DetectionResult; }
+
+interface ApiError { error: string; code?: string; detail?: string }
+
+async function fetchOrThrow<T>(url: string): Promise<T> {
+  const res = await fetch(url);
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = (json ?? {}) as ApiError;
+    throw Object.assign(new Error(err.error || `${res.status}`), { code: err.code, detail: err.detail, status: res.status });
+  }
+  return json as T;
+}
+
+function timeAgo(iso: string | null): string {
+  if (!iso) return "—";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(ms) || ms < 0) return "—";
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  const mo = Math.floor(d / 30);
+  if (mo < 12) return `${mo}mo ago`;
+  return `${Math.floor(mo / 12)}y ago`;
+}
+
+export interface RepoPickerSelection {
+  repo: GhRepoSummary;
+  branch: string;
+  detection: DetectionResult | null;
+}
+
+interface Props {
+  selectedRepoFullName: string | null;
+  selectedBranch: string | null;
+  onSelectRepo: (repo: GhRepoSummary) => void;
+  onSelectBranch: (branch: string) => void;
+  onDetected: (detection: DetectionResult | null) => void;
+}
+
+export function GithubRepoPicker({
+  selectedRepoFullName, selectedBranch, onSelectRepo, onSelectBranch, onDetected,
+}: Props) {
+  const [search, setSearch] = useState("");
+  const [visibility, setVisibility] = useState<Visibility>("all");
+  const [language, setLanguage] = useState<string>("all");
+  const [sort, setSort] = useState<SortKey>("recent");
+
+  const reposQ = useQuery<RepoPayload, Error>({
+    queryKey: ["/api/github/repos"],
+    queryFn: () => fetchOrThrow<RepoPayload>("/api/github/repos"),
+  });
+
+  const repos = reposQ.data?.repos ?? [];
+  const selectedRepo = useMemo(
+    () => repos.find((r) => r.fullName === selectedRepoFullName) ?? null,
+    [repos, selectedRepoFullName],
+  );
+
+  /* derive language facet from data */
+  const languages = useMemo(() => {
+    const set = new Set<string>();
+    repos.forEach((r) => { if (r.language) set.add(r.language); });
+    return Array.from(set).sort();
+  }, [repos]);
+
+  /* search + filters */
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let list = repos.filter((r) => {
+      if (visibility === "public" && r.private) return false;
+      if (visibility === "private" && !r.private) return false;
+      if (language !== "all" && r.language !== language) return false;
+      if (!q) return true;
+      return (
+        r.fullName.toLowerCase().includes(q) ||
+        (r.description ?? "").toLowerCase().includes(q) ||
+        (r.language ?? "").toLowerCase().includes(q) ||
+        r.topics.some((t) => t.toLowerCase().includes(q))
+      );
+    });
+    if (sort === "name") {
+      list = [...list].sort((a, b) => a.fullName.localeCompare(b.fullName));
+    } else {
+      list = [...list].sort((a, b) => {
+        const A = a.pushedAt ? new Date(a.pushedAt).getTime() : 0;
+        const B = b.pushedAt ? new Date(b.pushedAt).getTime() : 0;
+        return B - A;
+      });
+    }
+    return list;
+  }, [repos, search, visibility, language, sort]);
+
+  const branchesQ = useQuery<BranchPayload, Error>({
+    queryKey: ["/api/github/branches", selectedRepoFullName],
+    enabled: !!selectedRepoFullName,
+    queryFn: () => fetchOrThrow<BranchPayload>(`/api/github/repos/${selectedRepoFullName}/branches`),
+  });
+
+  const detectQ = useQuery<DetectPayload, Error>({
+    queryKey: ["/api/github/detect", selectedRepoFullName, selectedBranch],
+    enabled: !!selectedRepoFullName && !!selectedBranch,
+    queryFn: async () => {
+      const data = await fetchOrThrow<DetectPayload>(
+        `/api/github/repos/${selectedRepoFullName}/detect?branch=${encodeURIComponent(selectedBranch!)}`,
+      );
+      onDetected(data.detection);
+      return data;
+    },
+  });
+
+  const reposError = reposQ.error as (Error & { code?: string; status?: number }) | null;
+
+  return (
+    <div className="space-y-5" data-testid="github-repo-picker">
+      <div>
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <Github className="h-4 w-4 text-foreground/80" />
+            <div className="text-sm font-medium">Pick a GitHub repository</div>
+            {reposQ.data && (
+              <Badge variant="outline" className="text-[10px] font-mono" data-testid="badge-repo-count">
+                {filtered.length}/{reposQ.data.total}
+              </Badge>
+            )}
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => reposQ.refetch()}
+            disabled={reposQ.isFetching}
+            data-testid="button-refresh-repos"
+            className="h-7 gap-1"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", reposQ.isFetching && "animate-spin")} />
+            Refresh
+          </Button>
+        </div>
+
+        {/* filters */}
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-2 mb-3">
+          <div className="md:col-span-6 relative">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Filter repositories…"
+              className="pl-8"
+              data-testid="input-repo-search"
+            />
+          </div>
+          <div className="md:col-span-2">
+            <Select value={visibility} onValueChange={(v) => setVisibility(v as Visibility)}>
+              <SelectTrigger data-testid="select-visibility"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all" data-testid="option-vis-all">All</SelectItem>
+                <SelectItem value="public" data-testid="option-vis-public">Public</SelectItem>
+                <SelectItem value="private" data-testid="option-vis-private">Private</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="md:col-span-2">
+            <Select value={language} onValueChange={setLanguage}>
+              <SelectTrigger data-testid="select-language"><SelectValue placeholder="Language" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all" data-testid="option-lang-all">All languages</SelectItem>
+                {languages.map((l) => (
+                  <SelectItem key={l} value={l} data-testid={`option-lang-${l}`}>{l}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="md:col-span-2">
+            <Select value={sort} onValueChange={(v) => setSort(v as SortKey)}>
+              <SelectTrigger data-testid="select-sort"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="recent" data-testid="option-sort-recent">Recently pushed</SelectItem>
+                <SelectItem value="name" data-testid="option-sort-name">Name (A→Z)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        {/* loading / error / empty states */}
+        {reposQ.isLoading ? (
+          <div className="space-y-2" data-testid="repos-loading">
+            {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-16 w-full" />)}
+          </div>
+        ) : reposError ? (
+          <RepoErrorState error={reposError} onRetry={() => reposQ.refetch()} />
+        ) : filtered.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground" data-testid="repos-empty">
+            {repos.length === 0 ? "No repositories returned by GitHub for this account." : "No repositories match the current filters."}
+          </div>
+        ) : (
+          <ScrollArea className="h-[360px] rounded-md border border-border" data-testid="repos-list">
+            <ul className="divide-y divide-border">
+              {filtered.map((r) => (
+                <li key={r.id}>
+                  <button
+                    onClick={() => onSelectRepo(r)}
+                    className={cn(
+                      "w-full text-left px-3 py-2.5 transition-colors flex items-start gap-3",
+                      selectedRepoFullName === r.fullName ? "bg-primary/5" : "hover-elevate",
+                    )}
+                    data-testid={`option-repo-${r.fullName}`}
+                  >
+                    <div className="mt-0.5">
+                      {r.private
+                        ? <Lock className="h-4 w-4 text-amber-500" />
+                        : <Globe className="h-4 w-4 text-emerald-500" />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2 font-mono text-sm">
+                          <span className="truncate">{r.fullName}</span>
+                          {r.fork && <Badge variant="outline" className="text-[9px]">fork</Badge>}
+                          {r.archived && <Badge variant="outline" className="text-[9px]">archived</Badge>}
+                        </div>
+                        {selectedRepoFullName === r.fullName && <Check className="h-4 w-4 text-primary shrink-0" />}
+                      </div>
+                      {r.description && (
+                        <div className="text-xs text-muted-foreground line-clamp-1 mt-0.5">{r.description}</div>
+                      )}
+                      <div className="mt-1 flex items-center gap-3 text-[11px] text-muted-foreground font-mono">
+                        {r.language && <span>{r.language}</span>}
+                        <span>{timeAgo(r.pushedAt)}</span>
+                        <span className="inline-flex items-center gap-1">
+                          <GitBranch className="h-3 w-3" /> {r.defaultBranch}
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </ScrollArea>
+        )}
+      </div>
+
+      {/* selected repo details + branch selector + detection */}
+      {selectedRepo && (
+        <Card data-testid="card-selected-repo">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-primary" />
+              {selectedRepo.fullName}
+              <a href={selectedRepo.url} target="_blank" rel="noreferrer" className="text-[11px] font-mono text-muted-foreground underline ml-auto" data-testid="link-repo-external">
+                open on GitHub →
+              </a>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+              <div className="md:col-span-2">
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Branch</div>
+                {branchesQ.isLoading ? (
+                  <Skeleton className="h-9 w-full" data-testid="branches-loading" />
+                ) : branchesQ.error ? (
+                  <div className="text-xs text-amber-500" data-testid="branches-error">
+                    Could not load branches: {(branchesQ.error as Error).message}
+                  </div>
+                ) : (
+                  <Select
+                    value={selectedBranch ?? selectedRepo.defaultBranch}
+                    onValueChange={onSelectBranch}
+                  >
+                    <SelectTrigger data-testid="select-branch"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {(branchesQ.data?.branches ?? []).map((b) => (
+                        <SelectItem key={b.name} value={b.name} data-testid={`option-branch-${b.name}`}>
+                          <span className="font-mono">{b.name}</span>
+                          {b.name === selectedRepo.defaultBranch && (
+                            <Badge variant="outline" className="text-[9px] ml-2">default</Badge>
+                          )}
+                          {b.protected && (
+                            <Badge variant="outline" className="text-[9px] ml-2">protected</Badge>
+                          )}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Visibility</div>
+                <Badge variant="outline" className="text-[10px] font-mono" data-testid="badge-repo-visibility">
+                  {selectedRepo.private ? "private" : "public"}
+                </Badge>
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Language</div>
+                <span className="text-xs font-mono" data-testid="text-repo-language">{selectedRepo.language ?? "—"}</span>
+              </div>
+            </div>
+
+            <DetectionPanel
+              loading={detectQ.isLoading}
+              error={detectQ.error as (Error & { code?: string }) | null}
+              data={detectQ.data?.detection ?? null}
+            />
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function RepoErrorState({
+  error, onRetry,
+}: { error: Error & { code?: string; status?: number }; onRetry: () => void }) {
+  const code = error.code;
+  const title =
+    code === "auth-missing" ? "GitHub authentication unavailable" :
+    code === "rate-limit"   ? "GitHub API rate limit reached" :
+    code === "not-found"    ? "GitHub user / repos not found" :
+    "Could not load repositories";
+  const hint =
+    code === "auth-missing" ? "Configure GITHUB_TOKEN (or run `gh auth login`) on the server, then refresh." :
+    code === "rate-limit"   ? "Wait a few minutes and retry, or authenticate with a higher-limit token." :
+    "Try refreshing. If it persists, check the server logs.";
+  return (
+    <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4" data-testid="repos-error">
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5" />
+        <div className="flex-1">
+          <div className="text-sm font-medium">{title}</div>
+          <div className="text-xs text-muted-foreground mt-0.5">{hint}</div>
+          <div className="mt-2 text-[11px] font-mono text-muted-foreground" data-testid="repos-error-detail">
+            {error.message}
+          </div>
+        </div>
+        <Button size="sm" variant="outline" onClick={onRetry} data-testid="button-retry-repos" className="h-7 gap-1">
+          <RefreshCw className="h-3.5 w-3.5" /> Retry
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function DetectionPanel({
+  loading, error, data,
+}: {
+  loading: boolean;
+  error: (Error & { code?: string }) | null;
+  data: DetectionResult | null;
+}) {
+  if (loading) {
+    return (
+      <div className="rounded-md border border-border p-3" data-testid="detection-loading">
+        <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Detecting framework, build, providers…</div>
+        <Skeleton className="h-20 w-full" />
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3" data-testid="detection-error">
+        <div className="text-xs text-amber-500">Could not inspect repo contents: {error.message}</div>
+      </div>
+    );
+  }
+  if (!data) return null;
+
+  return (
+    <div className="rounded-md border border-border bg-card/40 p-4 space-y-3" data-testid="detection-panel">
+      <div className="flex items-center gap-2">
+        <FileCode className="h-4 w-4 text-primary" />
+        <div className="text-sm font-medium">Auto-detected configuration</div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+        <DKV k="Framework"        v={data.framework} testid="detect-framework" />
+        <DKV k="Package manager"  v={data.packageManager} testid="detect-pm" />
+        <DKV k="Build command"    v={data.buildCommand ?? "—"} mono testid="detect-build" />
+        <DKV k="Dev command"      v={data.devCommand ?? "—"} mono testid="detect-dev" />
+        <DKV k="Start command"    v={data.startCommand ?? "—"} mono testid="detect-start" />
+        <DKV k="Output dir"       v={data.outputDir ?? "—"} mono testid="detect-output" />
+      </div>
+
+      <div className="flex flex-wrap gap-1.5 text-[11px]" data-testid="detect-flags">
+        {data.prisma.present && (
+          <Badge variant="outline" className="font-mono inline-flex items-center gap-1" data-testid="flag-prisma">
+            <Database className="h-3 w-3" /> Prisma{data.prisma.migrationsPath ? " + migrations" : ""}
+          </Badge>
+        )}
+        {data.docker.dockerfile && (
+          <Badge variant="outline" className="font-mono inline-flex items-center gap-1" data-testid="flag-dockerfile">
+            <Container className="h-3 w-3" /> Dockerfile
+          </Badge>
+        )}
+        {data.docker.compose && (
+          <Badge variant="outline" className="font-mono" data-testid="flag-compose">docker-compose</Badge>
+        )}
+        {data.vercel.configFile && (
+          <Badge variant="outline" className="font-mono" data-testid="flag-vercel">vercel.json</Badge>
+        )}
+        {data.githubActions.workflowPaths.length > 0 && (
+          <Badge variant="outline" className="font-mono" data-testid="flag-actions">
+            GitHub Actions × {data.githubActions.workflowPaths.length}
+          </Badge>
+        )}
+        {data.envExample.path && (
+          <Badge variant="outline" className="font-mono" data-testid="flag-envexample">
+            {data.envExample.path} ({data.envExample.keys.length} keys)
+          </Badge>
+        )}
+        {data.blueprintRecommendation && (
+          <Badge className="font-mono inline-flex items-center gap-1" data-testid="flag-blueprint">
+            <Sparkles className="h-3 w-3" /> {data.blueprintRecommendation}
+          </Badge>
+        )}
+      </div>
+
+      {data.envSuggestions.length > 0 && (
+        <div className="text-[11px]" data-testid="detect-env-suggestions">
+          <div className="uppercase tracking-wide text-muted-foreground mb-1">Suggested env vars</div>
+          <div className="flex flex-wrap gap-1">
+            {data.envSuggestions.map((k) => (
+              <Badge key={k} variant="outline" className="font-mono text-[10px]">{k}</Badge>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {data.notes.length > 0 && (
+        <div className="text-[11px] text-muted-foreground inline-flex items-start gap-1" data-testid="detect-notes">
+          <FlaskConical className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <ul className="list-disc list-inside space-y-0.5">
+            {data.notes.map((n, i) => <li key={i}>{n}</li>)}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DKV({ k, v, mono, testid }: { k: string; v: string; mono?: boolean; testid?: string }) {
+  return (
+    <div className="flex items-center justify-between rounded-md border border-border px-2.5 py-1.5 bg-card/40" data-testid={testid}>
+      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{k}</span>
+      <span className={cn("text-[11px]", mono && "font-mono")}>{v}</span>
+    </div>
+  );
+}
+
+/* re-exported for caller convenience */
+export { fetchOrThrow };

@@ -28,6 +28,15 @@ export const projects = sqliteTable("projects", {
   envExample: text("env_example_json").notNull().default("[]"), // JSON: string[]
   blueprintId: integer("blueprint_id"),
   accessMode: text("access_mode").notNull().default("private"), // public|client|private
+  /* live GitHub source metadata (populated by the live repo picker) */
+  sourceProvider: text("source_provider").notNull().default("manual"), // github|manual
+  sourceBranch: text("source_branch"),                                  // selected ref
+  sourceUrl: text("source_url"),                                        // html_url
+  sourceDefaultBranch: text("source_default_branch"),
+  sourceVisibility: text("source_visibility"),                          // public|private
+  sourceLanguage: text("source_language"),
+  sourceUpdatedAt: integer("source_updated_at"),
+  detectedConfig: text("detected_config_json").notNull().default("{}"),// JSON object
   createdAt: integer("created_at").notNull(),
 });
 
