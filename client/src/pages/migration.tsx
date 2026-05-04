@@ -35,20 +35,13 @@ const STEP_ICONS: Record<string, any> = {
 
 export default function MigrationPage() {
   const plan = useQuery<MigrationPlan>({ queryKey: ["/api/migration/plan"] });
-  const [done, setDone] = useState<Record<string, boolean>>(() => {
-    if (typeof window === "undefined") return {};
-    try { return JSON.parse(localStorage.getItem("deployops:migration") ?? "{}"); }
-    catch { return {}; }
-  });
+  const [done, setDone] = useState<Record<string, boolean>>({});
 
   function toggle(id: string) {
-    const next = { ...done, [id]: !done[id] };
-    setDone(next);
-    try { localStorage.setItem("deployops:migration", JSON.stringify(next)); } catch {}
+    setDone((prev) => ({ ...prev, [id]: !prev[id] }));
   }
   function reset() {
     setDone({});
-    try { localStorage.removeItem("deployops:migration"); } catch {}
   }
 
   const completed = Object.values(done).filter(Boolean).length;
@@ -58,7 +51,7 @@ export default function MigrationPage() {
     <PageShell
       eyebrow="Operations"
       title="Migration plan"
-      description="Move DeployOps Console from local SQLite to Vercel + Neon Postgres. Each step is idempotent — check it off as you go. Progress is stored in your browser only."
+      description="Move DeployOps Console from local SQLite to Vercel + Neon Postgres. Each step is idempotent — check it off as you go. Progress is tracked in-memory for this session only."
       actions={
         <Button variant="outline" size="sm" onClick={reset} data-testid="button-migration-reset">
           <RotateCcw className="h-4 w-4 mr-1.5" /> Reset checklist
