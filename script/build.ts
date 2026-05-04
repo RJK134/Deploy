@@ -54,7 +54,11 @@ async function buildAll() {
       "process.env.NODE_ENV": '"production"',
     },
     minify: true,
-    external: externals,
+    /* `postgres` is an optional runtime opt-in: only required when DATABASE_URL
+     * points at Postgres / Neon. Mark it external so the bundle compiles when
+     * the package isn't installed; the runtime require in server/db.ts gives
+     * a clean error message if it's missing at boot. */
+    external: [...externals, "postgres"],
     logLevel: "info",
   });
 }

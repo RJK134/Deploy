@@ -90,3 +90,108 @@ None required. The seeded SQLite database makes everything navigable on first lo
 ## QA notes (known minor issues, none blocking)
 - On mobile (375 px) the run-detail action row (`Back` · `Advance one stage` · `Auto-advance`) overflows horizontally; the buttons remain reachable. Could be improved by stacking on `sm:` breakpoint.
 - The provider health card on Overview previously truncated names — fixed in the redeploy by stacking name+status on a single row with full width for the name and removing the noisy second line of notes.
+
+---
+
+## v2 additions: Production architecture, Migration plan, Fix Bot
+
+### File map (new + changed)
+
+| Concern                          | File                                  | New? |
+| -------------------------------- | ------------------------------------- | ---- |
+| DB selector (sqlite ↔ postgres)  | `server/db.ts`                        | ✱ new |
+| Storage layer                    | `server/storage.ts`                   | ↻ refactored to use `server/db.ts`; adds Fix Bot CRUD |
+| Postgres schema mirror           | `shared/schema.pg.ts`                 | ✱ new |
+| SQLite schema (existing tables)  | `shared/schema.ts`                    | ↻ adds health_checks, incidents, diagnoses, remediations, audit_logs |
+| Drizzle config                   | `drizzle.config.ts`                   | ↻ supports DEPLOYOPS_DIALECT=postgres |
+| Fix Bot adapters                 | `server/fixbot.ts`                    | ✱ new |
+| API: `/api/system`               | `server/routes.ts`                    | ↻ added |
+| API: `/api/architecture`         | `server/routes.ts`                    | ↻ added |
+| API: `/api/migration/plan`       | `server/routes.ts`                    | ↻ added |
+| API: `/api/fixbot/*`             | `server/routes.ts`                    | ↻ added (incidents, health, remediations) |
+| Architecture page                | `client/src/pages/architecture.tsx`   | ✱ new |
+| Migration plan page              | `client/src/pages/migration.tsx`      | ✱ new |
+| Fix Bot page                     | `client/src/pages/fixbot.tsx`         | ✱ new |
+| Sidebar nav (added 3 items)      | `client/src/components/app-sidebar.tsx` | ↻ |
+| App routes                       | `client/src/App.tsx`                  | ↻ |
+| Deployment guide                 | `docs/DEPLOYMENT.md`                  | ✱ new |
+| README                           | `README.md`                           | ↻ rewritten |
+
+### Vercel + Neon migration plan
+
+The full plan ships as both a docs file and a live page in the app. Headline:
+
+1. **Provision Neon** — `neonctl projects create` + branch per environment.
+2. **Capture DATABASE_URL** — pooled connection string for `production` branch.
+3. **Apply schema** — `npm install postgres && DEPLOYOPS_DIALECT=postgres npm run db:push:pg`.
+4. **Connect Vercel** — `npx vercel link` + import.
+5. **Set env vars** — DATABASE_URL (req), DEPLOYOPS_LIVE / NEON_API_KEY / VERCEL_TOKEN / GITHUB_TOKEN (optional).
+6. **Deploy** — `npx vercel deploy --prod`.
+7. **Validate** — `/api/system` returns `backend: "postgres"`.
+8. **Rollback path** — unset DATABASE_URL → falls back to SQLite. Restore from a Neon branch snapshot for point-in-time recovery.
+
+Every step is rendered in the app on `/migration` with copyable commands and per-step done toggles persisted to `localStorage`.
+
+### Backend / DB abstraction
+
+`server/db.ts` chooses the backend based on `DATABASE_URL`:
+
+- unset / `file:` prefix / non-postgres → SQLite via better-sqlite3 (default).
+- `postgres://` or `postgresql://` → Postgres via `postgres` + `drizzle-orm/postgres-js`.
+
+The `postgres` package is intentionally NOT in dependencies — it's a runtime opt-in. Without it, the app loudly fails at boot with the install command. SQLite remains the default for local + dry-run.
+
+`shared/schema.pg.ts` mirrors `shared/schema.ts` using `pg-core` types so `drizzle-kit push` can apply the schema to Neon. The application code uses generic Drizzle ops that work on both dialects. JSON-as-text columns round-trip because the application parses JSON itself.
+
+### Fix Bot operating model
+
+Tables: `health_checks`, `incidents`, `diagnoses`, `remediations`, `audit_logs`.
+
+Domain:
+
+- **Health checks** — recurring probes (http, build, migration, env, domain, workflow). 7 seeded.
+- **Incidents** — open / diagnosing / fix-ready / approved / resolved / escalated. 5 seeded covering missing env, prisma migration failure, vercel build failure, broken domain, gh actions failure.
+- **Diagnoses** — root cause + evidence + confidence (0–100) + recommendation.
+- **Remediations** — actions: `open-pr`, `create-issue`, `retry-deploy`, `update-env`, `run-migration`, `rollback`, `escalate`. Status: proposed → approved → applied / dismissed.
+- **Autonomy levels** — `diagnose-only`, `prepare-fix`, `approval-required` (default), `safe-auto-fix`. Surfaced in the UI as a Select; persisted on the incident.
+- **Audit log** — every action writes a row, scoped to `fixbot` + incident id.
+
+API:
+
+- `GET /api/fixbot/health` — list monitors.
+- `POST /api/fixbot/health/:key/probe` — re-probe (dry-run).
+- `GET /api/fixbot/incidents` — list with diagnoses/remediations counts + top confidence.
+- `GET /api/fixbot/incidents/:id` — detail with diagnoses, remediations, audit.
+- `POST /api/fixbot/incidents` — create.
+- `POST /api/fixbot/incidents/:id/diagnose` — run analyzer; appends a diagnosis.
+- `POST /api/fixbot/incidents/:id/autonomy` — change autonomy.
+- `POST /api/fixbot/incidents/:id/status` — change status.
+- `POST /api/fixbot/remediations` — create.
+- `POST /api/fixbot/remediations/:id/approve|dismiss|apply` — gating + apply.
+
+The `apply` endpoint routes through `server/fixbot.ts` adapters. Each adapter returns `{ effective: "simulated" | "applied" | "blocked" }`. Live writes are gated by THREE conditions, all of which must hold:
+
+1. `process.env.DEPLOYOPS_LIVE === "1"`
+2. The relevant provider is in `live` mode (Providers page)
+3. Either the remediation is `approved` OR the incident's autonomy is `safe-auto-fix`
+
+In this build, even when all three conditions hold, the adapters log `[live] would execute …` and return without performing real mutations — the operator wires the actual `gh` / `vercel` / `prisma` calls when ready.
+
+### Live mode caveats
+
+- `DEPLOYOPS_LIVE` is the master switch. Without it, every provider call is simulated regardless of per-provider mode.
+- Per-provider mode is independently switched on the Providers page.
+- Fix Bot apply respects both — it's safe to flip live for diagnostics while keeping dangerous remediations gated behind approval.
+
+### Test conventions
+
+Every new interactive element has `data-testid`. Patterns added:
+
+- Architecture: `card-runtime`, `card-architecture-diagram`, `card-layer-{id}`, `card-env-vars`, `node-{id}`, `row-envvar-{key}`, `link-migration-plan`, `badge-backend-{x}`, `badge-live-mode`, `badge-host`, `badge-database-url`.
+- Migration: `card-migration-summary`, `card-step-{id}`, `button-toggle-{id}`, `commands-{id}`, `badge-progress`, `badge-done-{id}`, `button-migration-reset`, `card-migration-docs`.
+- Fix Bot: `tabs-fixbot`, `tab-{incidents|monitors|audit}`, `card-incident-list`, `row-incident-{id}`, `card-incident-{id}`, `card-diagnoses`, `row-diagnosis-{id}`, `badge-confidence-{id}`, `card-remediations`, `row-remediation-{id}`, `badge-rem-status-{id}`, `button-approve-{id}`, `button-apply-{id}`, `button-dismiss-{id}`, `log-rem-{id}`, `select-autonomy`, `option-autonomy-{level}`, `button-diagnose`, `card-incident-audit`, `audit-{id}`, `card-check-{key}`, `button-probe-{key}`, `badge-health-{key}`, `kpi-{open|critical|down|live}`, `nav-fixbot`, `nav-architecture`, `nav-migration`.
+
+### Sidebar additions
+
+- **Operations** group gains `Fix Bot` (`/fixbot`).
+- New **Production** group: `Architecture` (`/architecture`), `Migration plan` (`/migration`).

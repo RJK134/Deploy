@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, Workflow, BookMarked, Activity, Globe2, Plug,
-  GitBranch, Sparkles,
+  GitBranch, Sparkles, ShieldAlert, Cloud, GitMerge,
 } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
@@ -29,8 +29,16 @@ const sections = [
   {
     label: "Operations",
     items: [
-      { title: "Access & domains", url: "/access",  icon: Globe2, testId: "nav-access" },
-      { title: "Providers",        url: "/providers", icon: Plug,  testId: "nav-providers" },
+      { title: "Access & domains", url: "/access",    icon: Globe2,      testId: "nav-access" },
+      { title: "Providers",        url: "/providers", icon: Plug,        testId: "nav-providers" },
+      { title: "Fix Bot",          url: "/fixbot",    icon: ShieldAlert, testId: "nav-fixbot" },
+    ],
+  },
+  {
+    label: "Production",
+    items: [
+      { title: "Architecture",   url: "/architecture", icon: Cloud,    testId: "nav-architecture" },
+      { title: "Migration plan", url: "/migration",    icon: GitMerge, testId: "nav-migration" },
     ],
   },
 ];

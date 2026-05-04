@@ -2,14 +2,20 @@ import type { Express, Request, Response } from "express";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { storage } from "./storage";
+import { dbInfo } from "./db";
 import {
   insertProjectSchema, insertRunSchema, insertBlueprintSchema,
-  type InsertStage,
+  insertIncidentSchema, insertRemediationSchema,
+  type InsertStage, type InsertAuditLog, type Incident, type Remediation,
 } from "@shared/schema";
 import {
   githubScan, githubGenerateCi, vercelDeploy, vercelDomain,
   neonProvision, prismaMigrate, railwayManual, smokeTest,
 } from "./providers";
+import {
+  fixbotDiagnose, fixbotGitHubAction, fixbotVercelAction, fixbotNeonAction,
+  fixbotPrismaAction, fixbotSmokeTest, fixbotEscalate, type ApplyContext,
+} from "./fixbot";
 
 /* Helper: parse JSON columns safely */
 function parseJSON<T>(raw: string | null | undefined, fallback: T): T {
@@ -255,6 +261,296 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/preview/env", async (req, res) => {
     const { framework = "nextjs", providers = [] } = req.body ?? {};
     res.json(suggestEnv(framework, providers));
+  });
+
+  /* ------------------------- system / db info --------------------------- */
+  app.get("/api/system", async (_req, res) => {
+    const liveEnabled = process.env.DEPLOYOPS_LIVE === "1";
+    const provs = await storage.listProviders();
+    const providerLive: Record<string, boolean> = {};
+    for (const p of provs) providerLive[p.key] = p.mode === "live";
+    res.json({
+      db: dbInfo,
+      liveEnabled,
+      providerModes: providerLive,
+      runtime: {
+        node: process.version,
+        platform: process.platform,
+        env: process.env.NODE_ENV ?? "development",
+        host: process.env.VERCEL ? "vercel" : "node",
+      },
+      vercelReady: Boolean(process.env.VERCEL_ENV) || Boolean(process.env.VERCEL),
+      databaseUrlPresent: Boolean(process.env.DATABASE_URL),
+    });
+  });
+
+  /* ----------------------------- fix bot -------------------------------- */
+  app.get("/api/fixbot/health", async (_req, res) => {
+    const items = await storage.listHealthChecks();
+    res.json(items);
+  });
+
+  app.post("/api/fixbot/health/:key/probe", async (req, res) => {
+    const c = (await storage.listHealthChecks()).find((x) => x.key === req.params.key);
+    if (!c) return res.status(404).json({ error: "check not found" });
+    /* Dry-run probe: deterministic mock outcome based on existing status. */
+    let detail = c.lastDetail;
+    if (c.status === "down") detail = `[probe] still failing: ${c.lastDetail}`;
+    else if (c.status === "warning") detail = `[probe] still degraded: ${c.lastDetail}`;
+    else detail = `[probe] 200 OK · ${Math.floor(80 + Math.random() * 60)} ms`;
+    const updated = await storage.updateHealthCheckStatus(c.key, c.status, detail);
+    res.json(updated);
+  });
+
+  app.get("/api/fixbot/incidents", async (_req, res) => {
+    const items = await storage.listIncidents();
+    /* attach diagnoses + remediations counts for list view */
+    const enriched = await Promise.all(items.map(async (i) => {
+      const dx = await storage.listDiagnoses(i.id);
+      const rx = await storage.listRemediations(i.id);
+      return {
+        ...i,
+        signals: parseJSON<string[]>(i.signals, []),
+        diagnosesCount: dx.length,
+        remediationsCount: rx.length,
+        topConfidence: dx[0]?.confidence ?? 0,
+      };
+    }));
+    res.json(enriched);
+  });
+
+  app.get("/api/fixbot/incidents/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    const inc = await storage.getIncident(id);
+    if (!inc) return res.status(404).json({ error: "not found" });
+    const dx = await storage.listDiagnoses(id);
+    const rx = await storage.listRemediations(id);
+    const audits = await storage.listAuditLogs("fixbot", id);
+    res.json({
+      incident: { ...inc, signals: parseJSON<string[]>(inc.signals, []) },
+      diagnoses: dx.map((d) => ({ ...d, evidence: parseJSON<string[]>(d.evidence, []) })),
+      remediations: rx.map((r) => ({ ...r, payload: parseJSON<Record<string, unknown>>(r.payload, {}) })),
+      audits,
+    });
+  });
+
+  app.post("/api/fixbot/incidents", async (req, res) => {
+    const parsed = insertIncidentSchema.safeParse({
+      ...req.body,
+      signals: typeof req.body.signals === "string"
+        ? req.body.signals
+        : JSON.stringify(req.body.signals ?? []),
+    });
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const inc = await storage.createIncident(parsed.data);
+    await storage.createAuditLog({ scope: "fixbot", refId: inc.id, actor: "user", event: "create", detail: inc.title, mode: "dry-run" } as InsertAuditLog);
+    res.json(inc);
+  });
+
+  app.post("/api/fixbot/incidents/:id/diagnose", async (req, res) => {
+    const id = Number(req.params.id);
+    const inc = await storage.getIncident(id);
+    if (!inc) return res.status(404).json({ error: "not found" });
+    const result = fixbotDiagnose(inc);
+    const created = await storage.createDiagnosis({
+      incidentId: id,
+      rootCause: result.rootCause,
+      evidence: JSON.stringify(result.evidence),
+      confidence: result.confidence,
+      recommendation: result.recommendation,
+    });
+    await storage.updateIncident(id, { status: inc.status === "open" ? "diagnosing" : inc.status });
+    await storage.createAuditLog({ scope: "fixbot", refId: id, actor: "fixbot", event: "diagnose", detail: `confidence ${result.confidence}`, mode: "dry-run" } as InsertAuditLog);
+    res.json({ ...created, evidence: result.evidence });
+  });
+
+  app.post("/api/fixbot/incidents/:id/autonomy", async (req, res) => {
+    const id = Number(req.params.id);
+    const allowed = ["diagnose-only", "prepare-fix", "approval-required", "safe-auto-fix"];
+    const next = String(req.body?.autonomy);
+    if (!allowed.includes(next)) return res.status(400).json({ error: "invalid autonomy" });
+    const updated = await storage.updateIncident(id, { autonomy: next });
+    await storage.createAuditLog({ scope: "fixbot", refId: id, actor: "user", event: "autonomy", detail: next, mode: "dry-run" } as InsertAuditLog);
+    res.json(updated);
+  });
+
+  app.post("/api/fixbot/incidents/:id/status", async (req, res) => {
+    const id = Number(req.params.id);
+    const allowed = ["open", "diagnosing", "fix-ready", "approved", "resolved", "escalated"];
+    const next = String(req.body?.status);
+    if (!allowed.includes(next)) return res.status(400).json({ error: "invalid status" });
+    const updated = await storage.updateIncident(id, {
+      status: next,
+      ...(next === "resolved" ? { resolvedAt: Date.now() } : {}),
+    });
+    await storage.createAuditLog({ scope: "fixbot", refId: id, actor: "user", event: "status", detail: next, mode: "dry-run" } as InsertAuditLog);
+    res.json(updated);
+  });
+
+  app.post("/api/fixbot/remediations", async (req, res) => {
+    const parsed = insertRemediationSchema.safeParse({
+      ...req.body,
+      payload: typeof req.body.payload === "string"
+        ? req.body.payload
+        : JSON.stringify(req.body.payload ?? {}),
+    });
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const created = await storage.createRemediation(parsed.data);
+    await storage.createAuditLog({ scope: "fixbot", refId: created.incidentId, actor: "user", event: "propose", detail: created.title, mode: "dry-run" } as InsertAuditLog);
+    res.json(created);
+  });
+
+  app.post("/api/fixbot/remediations/:id/approve", async (req, res) => {
+    const id = Number(req.params.id);
+    const r = await storage.getRemediation(id);
+    if (!r) return res.status(404).json({ error: "not found" });
+    const updated = await storage.updateRemediation(id, { status: "approved", approvalRequired: false });
+    await storage.createAuditLog({ scope: "fixbot", refId: r.incidentId, actor: "user", event: "approve", detail: r.title, mode: "dry-run" } as InsertAuditLog);
+    res.json(updated);
+  });
+
+  app.post("/api/fixbot/remediations/:id/dismiss", async (req, res) => {
+    const id = Number(req.params.id);
+    const r = await storage.getRemediation(id);
+    if (!r) return res.status(404).json({ error: "not found" });
+    const updated = await storage.updateRemediation(id, { status: "dismissed" });
+    await storage.createAuditLog({ scope: "fixbot", refId: r.incidentId, actor: "user", event: "dismiss", detail: r.title, mode: "dry-run" } as InsertAuditLog);
+    res.json(updated);
+  });
+
+  /**
+   * Apply a remediation. Defaults to dry-run unless DEPLOYOPS_LIVE=1, the
+   * relevant provider is in live mode, the remediation is approved (or its
+   * incident is at safe-auto-fix autonomy). Even in live mode, none of these
+   * adapters perform real provider mutations in this build.
+   */
+  app.post("/api/fixbot/remediations/:id/apply", async (req, res) => {
+    const id = Number(req.params.id);
+    const r = await storage.getRemediation(id);
+    if (!r) return res.status(404).json({ error: "not found" });
+    const inc = await storage.getIncident(r.incidentId);
+    if (!inc) return res.status(404).json({ error: "incident not found" });
+
+    const provs = await storage.listProviders();
+    const providerLive: Record<string, boolean> = {};
+    for (const p of provs) providerLive[p.key] = p.mode === "live";
+
+    const ctx: ApplyContext = {
+      mode: "dry-run",
+      autonomy: inc.autonomy as ApplyContext["autonomy"],
+      liveEnabled: process.env.DEPLOYOPS_LIVE === "1",
+      providerLive,
+    };
+
+    let result;
+    try {
+      switch (r.action) {
+        case "open-pr":
+        case "create-issue":
+          result = await fixbotGitHubAction(inc, r, ctx); break;
+        case "retry-deploy":
+        case "update-env":
+          result = await fixbotVercelAction(inc, r, ctx); break;
+        case "rollback":
+          result = await fixbotVercelAction(inc, r, ctx); break;
+        case "run-migration":
+          result = await fixbotPrismaAction(inc, r, ctx); break;
+        case "escalate":
+          result = await fixbotEscalate(inc, r, ctx); break;
+        default:
+          /* generic: smoke-test the affected target */
+          result = await fixbotSmokeTest(inc, r, ctx);
+      }
+    } catch (err: any) {
+      result = { ok: false, log: [String(err?.message ?? err)], effective: "blocked" as const };
+    }
+
+    await storage.updateRemediation(id, {
+      status: result.ok ? (result.effective === "applied" ? "applied" : "running") : "failed",
+      log: (r.log ? r.log + "\n\n" : "") + result.log.join("\n"),
+      completedAt: Date.now(),
+    });
+    /* if everything else for this incident is applied/dismissed, mark fix-ready */
+    const all = await storage.listRemediations(inc.id);
+    const allDone = all.every((x) => x.status === "applied" || x.status === "dismissed");
+    if (allDone) await storage.updateIncident(inc.id, { status: "fix-ready" });
+
+    await storage.createAuditLog({
+      scope: "fixbot", refId: inc.id, actor: "fixbot",
+      event: "apply",
+      detail: `${r.action} → ${result.effective}${result.reason ? ` (${result.reason})` : ""}`,
+      mode: ctx.liveEnabled ? "live" : "dry-run",
+    } as InsertAuditLog);
+
+    res.json({
+      ok: result.ok,
+      effective: result.effective,
+      reason: result.reason,
+      log: result.log,
+    });
+  });
+
+  /* ------------------------- migration plan ----------------------------- */
+  /**
+   * Migration plan checklist for moving from local SQLite to Vercel + Neon.
+   * Static for now — UI displays it; a future version could persist progress.
+   */
+  app.get("/api/migration/plan", async (_req, res) => {
+    const liveEnabled = process.env.DEPLOYOPS_LIVE === "1";
+    res.json({
+      backend: dbInfo,
+      live: liveEnabled,
+      steps: [
+        { id: "neon-create",  title: "Provision Neon project", description: "Create a Neon project and a `main` branch. Note the pooled connection string.", commands: ["neonctl projects create --name deployops-console", "neonctl connection-string main --pooled --role-name app"] },
+        { id: "branch-envs",  title: "Branch one Postgres database per env", description: "Create branches: production, demo, test. Each gets its own DATABASE_URL.", commands: ["neonctl branches create --name production --parent main", "neonctl branches create --name demo --parent main", "neonctl branches create --name test --parent main"] },
+        { id: "schema-push",  title: "Apply schema to production", description: "Run drizzle-kit push (Postgres dialect) against the production branch's connection string.", commands: ["DATABASE_URL=postgres://... npm run db:push:pg"] },
+        { id: "vercel-link",  title: "Link the repo to Vercel", description: "Import this repo on Vercel. Set the Output Directory to `dist/public` and the Build Command to `npm run build`.", commands: ["npx vercel link --yes", "npx vercel git connect"] },
+        { id: "env-vars",     title: "Set env vars on Vercel", description: "Add DATABASE_URL (Neon pooled), DEPLOYOPS_LIVE (optional, '1' for live mode), VERCEL_TOKEN, NEON_API_KEY, GITHUB_TOKEN.", commands: ["npx vercel env add DATABASE_URL production", "npx vercel env add DEPLOYOPS_LIVE production", "npx vercel env add NEON_API_KEY production"] },
+        { id: "install-pg",   title: "Install Postgres driver on the deploy", description: "The repo defaults to SQLite. Add the `postgres` package so the production server can use it.", commands: ["npm install postgres"] },
+        { id: "deploy",       title: "First production deploy", description: "Trigger a production build on Vercel. Verify /api/system reports backend=postgres.", commands: ["npx vercel deploy --prod"] },
+        { id: "validate",     title: "Cutover validation", description: "Hit /api/projects, /api/runs, /api/fixbot/incidents. Confirm seed data appears (or run a one-off migration script if importing existing SQLite data).", commands: ["curl https://your-app.vercel.app/api/system", "curl https://your-app.vercel.app/api/fixbot/incidents"] },
+        { id: "rollback",     title: "Rollback guidance", description: "If the cutover fails: unset DATABASE_URL on the Vercel project, redeploy. The app falls back to SQLite (ephemeral on Vercel — only intended for local). Restore from a Neon branch snapshot if data was corrupted.", commands: ["npx vercel env rm DATABASE_URL production", "npx vercel deploy --prod"] },
+      ],
+    });
+  });
+
+  /* ------------------------- architecture map --------------------------- */
+  /**
+   * Architecture description rendered by the Production Architecture page.
+   * Static description plus runtime fields from dbInfo / providers.
+   */
+  app.get("/api/architecture", async (_req, res) => {
+    const provs = await storage.listProviders();
+    res.json({
+      db: dbInfo,
+      live: process.env.DEPLOYOPS_LIVE === "1",
+      vercelDetected: Boolean(process.env.VERCEL),
+      layers: [
+        { id: "edge",    label: "Vercel Edge / CDN",        detail: "Static assets and HTTP edge for the React UI. Free TLS, automatic preview URLs per branch." },
+        { id: "app",     label: "Vercel Serverless / Node",  detail: "Express handler exported as a Vercel function. Runs the API + serves the SPA shell." },
+        { id: "data",    label: "Neon Postgres",             detail: "Serverless Postgres with branchable databases. One branch per environment." },
+        { id: "storage", label: "Object storage (optional)", detail: "Reserved for run logs / artifacts. Not in use today." },
+        { id: "github",  label: "GitHub source",             detail: "Repo source of truth for projects under management. PRs and workflows authored by Fix Bot land here." },
+        { id: "providers", label: "Provider adapters",       detail: provs.map((p) => `${p.name}: ${p.mode}`).join(" · ") },
+      ],
+      flows: [
+        { from: "edge",     to: "app",      label: "HTTP request" },
+        { from: "app",      to: "data",     label: "DATABASE_URL (pooled)" },
+        { from: "app",      to: "github",   label: "gh CLI / Octokit" },
+        { from: "app",      to: "providers",label: "dry-run by default" },
+        { from: "providers", to: "data",    label: "Neon connector" },
+        { from: "providers", to: "edge",    label: "Vercel deploy" },
+      ],
+      envVars: [
+        { key: "DATABASE_URL",       required: true,  source: "neon", note: "Pooled connection string from the production branch." },
+        { key: "DEPLOYOPS_LIVE",     required: false, source: "operator", note: "Set to '1' to enable live provider calls. Defaults to dry-run." },
+        { key: "NEON_API_KEY",       required: false, source: "neon", note: "Used by Fix Bot to inspect/branch databases." },
+        { key: "VERCEL_TOKEN",       required: false, source: "vercel", note: "Used by Fix Bot to redeploy / set env vars on managed projects." },
+        { key: "GITHUB_TOKEN",       required: false, source: "github", note: "Used by Fix Bot to open issues / PRs." },
+        { key: "PRISMA_API_KEY",     required: false, source: "prisma", note: "Used when Prisma Postgres is the chosen DB instead of Neon." },
+        { key: "NODE_ENV",           required: false, source: "vercel", note: "Vercel sets this to 'production' automatically." },
+      ],
+    });
   });
 
   return httpServer;

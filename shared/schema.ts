@@ -113,3 +113,91 @@ export const providers = sqliteTable("providers", {
 export const insertProviderSchema = createInsertSchema(providers).omit({ id: true, lastChecked: true });
 export type InsertProvider = z.infer<typeof insertProviderSchema>;
 export type Provider = typeof providers.$inferSelect;
+
+/* -------------------- Fix Bot: incidents / checks / etc -------------------- */
+/**
+ * Fix Bot reliability domain.
+ *
+ * `healthChecks`     a recurring probe (HTTP, build, migration, env) that emits a status
+ * `incidents`        a detected problem with one or more diagnoses + remediations
+ * `diagnoses`        an analyzed root cause card with confidence + evidence
+ * `remediations`     a proposed or executed fix step (PR, redeploy, env update, escalate)
+ * `auditLogs`        every Fix Bot action recorded immutably (dry-run by default)
+ */
+export const healthChecks = sqliteTable("health_checks", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  key: text("key").notNull().unique(),
+  name: text("name").notNull(),
+  kind: text("kind").notNull(),                    // http|build|migration|env|domain|workflow
+  target: text("target").notNull(),                // URL, build name, migration tag, etc.
+  status: text("status").notNull().default("ok"),  // ok|warning|down|unknown
+  intervalSec: integer("interval_sec").notNull().default(60),
+  lastObservedAt: integer("last_observed_at"),
+  lastDetail: text("last_detail").notNull().default(""),
+});
+export const insertHealthCheckSchema = createInsertSchema(healthChecks).omit({ id: true, lastObservedAt: true });
+export type InsertHealthCheck = z.infer<typeof insertHealthCheckSchema>;
+export type HealthCheck = typeof healthChecks.$inferSelect;
+
+export const incidents = sqliteTable("incidents", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  projectId: integer("project_id"),
+  runId: integer("run_id"),
+  title: text("title").notNull(),
+  category: text("category").notNull(),            // env|build|migration|domain|ci|runtime
+  severity: text("severity").notNull().default("warning"), // info|warning|critical
+  status: text("status").notNull().default("open"),        // open|diagnosing|fix-ready|approved|resolved|escalated
+  autonomy: text("autonomy").notNull().default("approval-required"), // diagnose-only|prepare-fix|approval-required|safe-auto-fix
+  source: text("source").notNull().default("fixbot"),      // fixbot|manual|webhook
+  summary: text("summary").notNull().default(""),
+  signals: text("signals_json").notNull().default("[]"),   // JSON: log lines / probe results
+  detectedAt: integer("detected_at").notNull(),
+  resolvedAt: integer("resolved_at"),
+});
+export const insertIncidentSchema = createInsertSchema(incidents).omit({ id: true, detectedAt: true, resolvedAt: true });
+export type InsertIncident = z.infer<typeof insertIncidentSchema>;
+export type Incident = typeof incidents.$inferSelect;
+
+export const diagnoses = sqliteTable("diagnoses", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  incidentId: integer("incident_id").notNull(),
+  rootCause: text("root_cause").notNull(),
+  evidence: text("evidence_json").notNull().default("[]"), // JSON string[]
+  confidence: integer("confidence").notNull().default(0),  // 0-100
+  recommendation: text("recommendation").notNull().default(""),
+  createdAt: integer("created_at").notNull(),
+});
+export const insertDiagnosisSchema = createInsertSchema(diagnoses).omit({ id: true, createdAt: true });
+export type InsertDiagnosis = z.infer<typeof insertDiagnosisSchema>;
+export type Diagnosis = typeof diagnoses.$inferSelect;
+
+export const remediations = sqliteTable("remediations", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  incidentId: integer("incident_id").notNull(),
+  action: text("action").notNull(),                // open-pr|retry-deploy|update-env|run-migration|escalate|rollback|create-issue
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  status: text("status").notNull().default("proposed"), // proposed|approved|running|applied|failed|dismissed
+  approvalRequired: integer("approval_required", { mode: "boolean" }).notNull().default(true),
+  payload: text("payload_json").notNull().default("{}"), // JSON object: PR body, env diff, etc.
+  log: text("log").notNull().default(""),
+  createdAt: integer("created_at").notNull(),
+  completedAt: integer("completed_at"),
+});
+export const insertRemediationSchema = createInsertSchema(remediations).omit({ id: true, createdAt: true, completedAt: true });
+export type InsertRemediation = z.infer<typeof insertRemediationSchema>;
+export type Remediation = typeof remediations.$inferSelect;
+
+export const auditLogs = sqliteTable("audit_logs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  scope: text("scope").notNull(),                  // fixbot|run|provider|migration
+  refId: integer("ref_id"),
+  actor: text("actor").notNull().default("fixbot"),// fixbot|user|system
+  event: text("event").notNull(),                  // diagnose|propose|approve|apply|dismiss|escalate
+  detail: text("detail").notNull().default(""),
+  mode: text("mode").notNull().default("dry-run"), // dry-run|live
+  createdAt: integer("created_at").notNull(),
+});
+export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true, createdAt: true });
+export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
+export type AuditLog = typeof auditLogs.$inferSelect;
