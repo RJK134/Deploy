@@ -119,7 +119,12 @@ export default function Overview() {
         <Card className="xl:col-span-2" data-testid="card-env-matrix">
           <CardHeader className="flex flex-row items-center justify-between pb-3">
             <CardTitle className="text-sm">Environment readiness</CardTitle>
-            <Badge variant="outline" className="font-mono text-[10px]">DRY-RUN by default</Badge>
+            <div className="flex items-center gap-2">
+              <Link href="/projects" className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1" data-testid="link-projects-dashboard">
+                Project dashboards <ArrowRight className="h-3 w-3" />
+              </Link>
+              <Badge variant="outline" className="font-mono text-[10px]">DRY-RUN by default</Badge>
+            </div>
           </CardHeader>
           <CardContent>
             {projects.isLoading ? (
@@ -143,7 +148,9 @@ export default function Overview() {
                         <tr key={p.id} className="border-t border-border/60 hover:bg-card/40 transition-colors"
                             data-testid={`row-project-${p.id}`}>
                           <td className="px-3 py-3">
-                            <div className="font-medium">{p.name}</div>
+                            <Link href={`/projects/${p.id}`} className="font-medium hover:underline" data-testid={`link-project-dashboard-${p.id}`}>
+                              {p.name}
+                            </Link>
                             <div className="text-[11px] text-muted-foreground">{p.framework}</div>
                           </td>
                           <td className="px-3 py-3 font-mono text-xs text-muted-foreground">

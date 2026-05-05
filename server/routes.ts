@@ -31,6 +31,11 @@ import {
 import {
   neonReadiness, prismaReadiness, railwayReadiness, supabaseReadiness,
 } from "./live-providers";
+import {
+  buildProjectDashboard, listEnvironments, getEnvironmentStatus,
+  listProjectsForDashboard, snapshotProvidersForProject,
+  ENVIRONMENT_LABELS, type EnvironmentKey,
+} from "./dashboard";
 
 /* Helper: parse JSON columns safely */
 function parseJSON<T>(raw: string | null | undefined, fallback: T): T {
@@ -388,6 +393,104 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const updated = await storage.updateProject(id, patch);
     if (!updated) return res.status(404).json({ error: "not found" });
     res.json(updated);
+  });
+
+  /* ----------------------- project dashboards -------------------------- */
+  /**
+   * Real link/status aggregator per project. Read-only by default. Pass
+   * `?refresh=1` to perform live read-only polls (Vercel deployment poll +
+   * provider resource confirmations) and update the persisted status.
+   *
+   * Response is honest: app URLs only appear when a real provider returned
+   * them; otherwise the relevant environment shows blockers + "Connect provider"
+   * remediation. Dry-run / seeded data resolves to `dry_run_validated` or
+   * `not_configured`, never `live_ready`.
+   */
+  app.get("/api/projects/:id/dashboard", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: "bad project id", code: "bad-request" });
+    try {
+      const refresh = req.query.refresh === "1" || req.query.refresh === "true";
+      const dash = await buildProjectDashboard(id, { refresh });
+      if (!dash) return res.status(404).json({ error: "project not found", code: "not-found" });
+      res.json({ ok: true, dashboard: dash });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+    }
+  });
+
+  app.get("/api/projects/:id/environments", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: "bad project id", code: "bad-request" });
+    const envs = await listEnvironments(id);
+    if (!envs) return res.status(404).json({ error: "project not found", code: "not-found" });
+    res.json({ ok: true, environments: envs, labels: ENVIRONMENT_LABELS });
+  });
+
+  app.get("/api/projects/:id/environments/:environment/status", async (req, res) => {
+    const id = Number(req.params.id);
+    const envParam = String(req.params.environment) as EnvironmentKey;
+    if (!Number.isFinite(id)) return res.status(400).json({ error: "bad project id", code: "bad-request" });
+    if (!["test", "demo", "deploy"].includes(envParam)) {
+      return res.status(400).json({ error: "environment must be test|demo|deploy", code: "bad-request" });
+    }
+    try {
+      const status = await getEnvironmentStatus(id, envParam, { refresh: false });
+      if (!status) return res.status(404).json({ error: "project not found", code: "not-found" });
+      res.json({ ok: true, status });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+    }
+  });
+
+  /**
+   * Read-only refresh of a single environment's status. Polls the provider's
+   * read endpoints (Vercel deployment status, Neon project existence) and
+   * persists any updates. NEVER triggers a deployment or other provider write.
+   */
+  app.post("/api/projects/:id/environments/:environment/refresh-status", async (req, res) => {
+    const id = Number(req.params.id);
+    const envParam = String(req.params.environment) as EnvironmentKey;
+    if (!Number.isFinite(id)) return res.status(400).json({ error: "bad project id", code: "bad-request" });
+    if (!["test", "demo", "deploy"].includes(envParam)) {
+      return res.status(400).json({ error: "environment must be test|demo|deploy", code: "bad-request" });
+    }
+    try {
+      const status = await getEnvironmentStatus(id, envParam, { refresh: true });
+      if (!status) return res.status(404).json({ error: "project not found", code: "not-found" });
+      res.json({ ok: true, status });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+    }
+  });
+
+  /**
+   * Project list with dashboard summary fields (state per environment, real
+   * URLs only). Used by the Projects index page. No provider calls are made
+   * by this endpoint — it is a pure DB aggregation.
+   */
+  app.get("/api/projects-dashboard", async (_req, res) => {
+    try {
+      const list = await listProjectsForDashboard();
+      res.json({ ok: true, projects: list });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+    }
+  });
+
+  /**
+   * Snapshot of provider read-only status for the entire project workspace.
+   * Used by the dashboard "Refresh providers" action. Read-only.
+   */
+  app.get("/api/projects/:id/providers-snapshot", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: "bad project id", code: "bad-request" });
+    try {
+      const snap = await snapshotProvidersForProject(id);
+      res.json({ ok: true, snapshot: snap });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+    }
   });
 
   /* ----------------------------- runs ----------------------------------- */

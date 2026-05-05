@@ -1,12 +1,12 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { PageShell } from "@/components/page-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Globe2, Lock, Users, Copy, Check } from "lucide-react";
+import { Globe2, Lock, Users, Copy, Check, ExternalLink, ArrowRight } from "lucide-react";
 import { useState } from "react";
 import type { Project } from "@shared/schema";
 
@@ -16,14 +16,43 @@ const ACCESS_MODES = [
   { key: "private", icon: Lock,   label: "Private", blurb: "Only invited team members. SSO recommended. Best for internal tools." },
 ];
 
+type EnvKey = "test" | "demo" | "deploy";
+
+interface ProjectListEntry {
+  id: number;
+  name: string;
+  repo: string;
+  framework: string;
+  accessMode: string;
+  sourceBranch: string | null;
+  sourceDefaultBranch: string | null;
+  states: Record<EnvKey, string>;
+  urls: Record<EnvKey, string | null>;
+  latestRunIds: Record<EnvKey, number | null>;
+  lastUpdated: number;
+}
+
+const ENV_LABELS: Record<EnvKey, string> = {
+  test: "Test",
+  demo: "Demo / Run",
+  deploy: "Production",
+};
+
 export default function Access() {
   const projects = useQuery<Project[]>({ queryKey: ["/api/projects"] });
+  const dashboard = useQuery<{ ok: boolean; projects: ProjectListEntry[] }>({
+    queryKey: ["/api/projects-dashboard"],
+  });
+
+  const dashByProjectId = new Map<number, ProjectListEntry>(
+    (dashboard.data?.projects ?? []).map((p) => [p.id, p]),
+  );
 
   return (
     <PageShell
       eyebrow="Operations"
       title="Access & domains"
-      description="Decide who can reach each environment. Public for traffic. Client for demos. Private for staff."
+      description="Decide who can reach each environment. Public for traffic. Client for demos. Private for staff. Real share links appear only after a successful live deployment."
     >
       {/* legend */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
@@ -52,7 +81,7 @@ export default function Access() {
             <ul>
               {projects.data?.map((p) => (
                 <li key={p.id} className="border-t border-border first:border-t-0 px-4 py-4" data-testid={`row-access-${p.id}`}>
-                  <ProjectAccessRow project={p} />
+                  <ProjectAccessRow project={p} dashboardEntry={dashByProjectId.get(p.id)} />
                 </li>
               ))}
             </ul>
@@ -60,7 +89,6 @@ export default function Access() {
         </CardContent>
       </Card>
 
-      {/* invitation checklist */}
       <Card className="mt-6">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">Authorization checklist</CardTitle>
@@ -79,7 +107,7 @@ export default function Access() {
   );
 }
 
-function ProjectAccessRow({ project }: { project: Project }) {
+function ProjectAccessRow({ project, dashboardEntry }: { project: Project; dashboardEntry?: ProjectListEntry }) {
   const [copied, setCopied] = useState<string | null>(null);
   const update = useMutation({
     mutationFn: async (mode: string) => {
@@ -89,15 +117,9 @@ function ProjectAccessRow({ project }: { project: Project }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/projects"] }),
   });
 
-  const urls = {
-    test: `https://${project.name}-test.vercel.app`,
-    demo: `https://${project.name}-demo.vercel.app`,
-    deploy: `https://${project.name}.app`,
-  } as const;
-
-  function copy(env: keyof typeof urls) {
-    navigator.clipboard.writeText(urls[env]).catch(() => {});
-    setCopied(env);
+  function copy(url: string, key: string) {
+    navigator.clipboard.writeText(url).catch(() => {});
+    setCopied(key);
     setTimeout(() => setCopied(null), 1500);
   }
 
@@ -105,7 +127,9 @@ function ProjectAccessRow({ project }: { project: Project }) {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="text-sm font-medium">{project.name}</div>
+          <Link href={`/projects/${project.id}`} className="text-sm font-medium hover:underline" data-testid={`link-access-project-${project.id}`}>
+            {project.name}
+          </Link>
           <div className="text-[11px] font-mono text-muted-foreground">{project.repo}</div>
         </div>
         <div className="flex items-center gap-2">
@@ -128,15 +152,47 @@ function ProjectAccessRow({ project }: { project: Project }) {
         </div>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-        {(["test", "demo", "deploy"] as const).map((env) => (
-          <div key={env} className="flex items-center gap-2 rounded-md border border-border bg-card/40 px-3 py-2">
-            <Badge variant="outline" className="font-mono text-[10px] uppercase">{env}</Badge>
-            <code className="text-[11px] font-mono truncate flex-1">{urls[env]}</code>
-            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => copy(env)} data-testid={`button-copy-${project.id}-${env}`}>
-              {copied === env ? <Check className="h-3 w-3 text-primary" /> : <Copy className="h-3 w-3" />}
-            </Button>
-          </div>
-        ))}
+        {(["test", "demo", "deploy"] as EnvKey[]).map((env) => {
+          const url = dashboardEntry?.urls[env] ?? null;
+          const state = dashboardEntry?.states[env] ?? "not_configured";
+          const key = `${project.id}-${env}`;
+          return (
+            <div key={env} className="flex items-center gap-2 rounded-md border border-border bg-card/40 px-3 py-2" data-testid={`access-env-${project.id}-${env}`}>
+              <Badge variant="outline" className="font-mono text-[10px] uppercase shrink-0">{ENV_LABELS[env]}</Badge>
+              {url ? (
+                <>
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] font-mono truncate flex-1 text-primary hover:underline inline-flex items-center gap-1"
+                    title={url}
+                    data-testid={`access-url-${project.id}-${env}`}
+                  >
+                    <ExternalLink className="h-3 w-3 shrink-0" />
+                    <span className="truncate">{url.replace(/^https?:\/\//, "")}</span>
+                  </a>
+                  <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => copy(url, key)} data-testid={`button-copy-${project.id}-${env}`}>
+                    {copied === key ? <Check className="h-3 w-3 text-primary" /> : <Copy className="h-3 w-3" />}
+                  </Button>
+                </>
+              ) : (
+                <span className="text-[11px] text-muted-foreground italic flex-1" data-testid={`access-no-url-${project.id}-${env}`}>
+                  no real URL · {state.replace(/_/g, " ")}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div>
+        <Link
+          href={`/projects/${project.id}`}
+          className="text-[11px] text-primary hover:underline inline-flex items-center gap-1"
+          data-testid={`link-access-dashboard-${project.id}`}
+        >
+          Open project dashboard <ArrowRight className="h-3 w-3" />
+        </Link>
       </div>
     </div>
   );

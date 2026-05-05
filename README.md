@@ -11,6 +11,17 @@ credentials and live mode are enabled.
 
 ## What's new
 
+- **Project environment dashboards** — every project now has a real-link
+  dashboard at `/projects/:id` that aggregates GitHub source metadata, the
+  latest run per environment (Test, Demo/Run, Production), persisted Vercel
+  deployment metadata, and live provider resources (Neon / Supabase / Railway /
+  Prisma). The dashboard's "Open" and "Share" buttons are gated on a real
+  provider URL — if the system has no real public URL persisted (or fetched
+  from a connected provider), the card shows an honest blocker list with a
+  "Connect provider" / "Configure" CTA instead of a fake link. The refresh
+  action re-polls Vercel deployment status (and confirms Neon / Supabase /
+  Railway resource presence) without performing any provider write. See
+  [docs/PROJECT_DASHBOARDS.md](docs/PROJECT_DASHBOARDS.md).
 - **Live provider provisioning** — real adapters for Neon, Prisma, Railway,
   Supabase plus an extended Vercel adapter (project create/link, env-var
   upsert, deployment trigger + poll) and a combined orchestrator at

@@ -21,12 +21,16 @@ import Architecture from "@/pages/architecture";
 import Migration from "@/pages/migration";
 import FixBot from "@/pages/fixbot";
 import Readiness from "@/pages/readiness";
+import ProjectsList from "@/pages/projects";
+import ProjectDashboardPage from "@/pages/project-dashboard";
 
 function AppRouter() {
   return (
     <Switch>
       <Route path="/" component={Overview} />
       <Route path="/wizard" component={Wizard} />
+      <Route path="/projects" component={ProjectsList} />
+      <Route path="/projects/:id" component={ProjectDashboardPage} />
       <Route path="/blueprints" component={Blueprints} />
       <Route path="/pipelines" component={Pipelines} />
       <Route path="/runs" component={Runs} />

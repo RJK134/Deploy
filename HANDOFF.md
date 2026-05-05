@@ -18,6 +18,8 @@ Blocked paths return `live_blocked` with structured `{code, message, remediation
 | Route | File | Purpose |
 | --- | --- | --- |
 | `#/` | `client/src/pages/overview.tsx` | KPI strip · provider health card · environment readiness matrix · recent runs |
+| `#/projects` | `client/src/pages/projects.tsx` | **Project index** — cards per project, Test/Demo/Production state + real URLs |
+| `#/projects/:id` | `client/src/pages/project-dashboard.tsx` | **Project environment dashboard** — Test, Demo/Run, Production columns with real Open/Share/Inspector buttons (only when a real provider URL exists), blockers, share panel |
 | `#/wizard` | `client/src/pages/wizard.tsx` | 5-step wizard: Project → Environment → Blueprint → Providers → Review (env vars / CI / pre-flight tabs) |
 | `#/runs` | `client/src/pages/runs.tsx` | All runs table |
 | `#/runs/:id` | `client/src/pages/run-detail.tsx` | Pipeline stage list + dark log panel + Auto-advance loop |

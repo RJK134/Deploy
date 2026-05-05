@@ -6,6 +6,17 @@ a thin client around the provider's public API. There are no simulated
 success states — every "ok" in this codebase corresponds to a real 2xx (or
 GraphQL `data` without errors) response from the upstream provider.
 
+## Read-only status / link aggregation
+
+The project environment dashboard at `/projects/:id` aggregates the real
+state of a project's Test / Demo / Production environments without
+performing any provider write. See [PROJECT_DASHBOARDS.md](PROJECT_DASHBOARDS.md)
+for the full design. The dashboard uses the provider read endpoints listed
+below (Vercel `GET /v13/deployments/:id`, Neon `GET /projects/:id`, Supabase
+`GET /v1/projects`, Railway GraphQL `me`/`projects`, Prisma `GET /v1/projects`)
+and surfaces the same `{code, message, remediation}` blockers when
+credentials or integrations are missing.
+
 ## What is wired up
 
 | Provider  | Token env var               | Real validate | Real list      | Real provision (write)                   |

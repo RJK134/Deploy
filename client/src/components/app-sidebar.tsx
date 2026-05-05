@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, Workflow, BookMarked, Activity, Globe2, Plug,
-  GitBranch, Sparkles, ShieldAlert, Cloud, GitMerge, Zap,
+  GitBranch, Sparkles, ShieldAlert, Cloud, GitMerge, Zap, Box,
 } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
@@ -15,6 +15,7 @@ const sections = [
     label: "Workspace",
     items: [
       { title: "Overview",    url: "/",           icon: LayoutDashboard, testId: "nav-overview" },
+      { title: "Projects",    url: "/projects",   icon: Box,             testId: "nav-projects" },
       { title: "New deploy",  url: "/wizard",     icon: Sparkles,        testId: "nav-wizard" },
       { title: "Runs",        url: "/runs",       icon: Activity,        testId: "nav-runs" },
     ],
