@@ -18,6 +18,7 @@ import {
 } from "./fixbot";
 import {
   ghViewer, ghListRepos, ghListBranches, ghDetectConfig, GhError,
+  type GhRepoSummary,
 } from "./github";
 
 /* Helper: parse JSON columns safely */
@@ -63,9 +64,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * server. Each handler maps GhError codes to a stable response shape so the
    * UI can render a useful empty/error state.
    */
+  /**
+   * Map GitHub backend errors to a stable HTTP response shape.
+   *
+   * Defensive: we sanitize the status here too, in case any code path
+   * smuggles an invalid value (e.g. a CLI exit code) onto err.status.
+   * Express's res.status() will throw RangeError on out-of-range values
+   * and crash the request — we want a clean 503 instead.
+   */
   function sendGhError(res: Response, err: unknown) {
     if (err instanceof GhError) {
-      return res.status(err.status).json({ error: err.message, code: err.code, detail: err.detail });
+      const status = Number.isInteger(err.status) && err.status >= 100 && err.status <= 599
+        ? err.status
+        : 503;
+      return res.status(status).json({ error: err.message, code: err.code, detail: err.detail });
     }
     const msg = (err as any)?.message ?? String(err);
     return res.status(500).json({ error: msg, code: "unknown" });
@@ -76,33 +88,176 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     catch (err) { sendGhError(res, err); }
   });
 
+  /* ---- repo cache helpers ---- */
+  function rowToRepo(row: any): GhRepoSummary {
+    return {
+      id: row.id,
+      name: row.name,
+      fullName: row.fullName,
+      owner: row.owner,
+      description: row.description ?? null,
+      url: row.url ?? `https://github.com/${row.fullName}`,
+      cloneUrl: row.cloneUrl ?? `https://github.com/${row.fullName}.git`,
+      defaultBranch: row.defaultBranch ?? "main",
+      private: !!row.isPrivate,
+      fork: !!row.fork,
+      archived: !!row.archived,
+      language: row.language ?? null,
+      pushedAt: row.pushedAt ?? null,
+      updatedAt: row.updatedAt ?? null,
+      topics: parseJSON<string[]>(row.topics, []),
+    };
+  }
+  async function persistRepoCache(repos: GhRepoSummary[]): Promise<void> {
+    for (const r of repos) {
+      try {
+        await storage.upsertGithubRepo({
+          fullName: r.fullName,
+          owner: r.owner,
+          name: r.name,
+          description: r.description ?? null,
+          url: r.url ?? null,
+          cloneUrl: r.cloneUrl ?? null,
+          defaultBranch: r.defaultBranch ?? "main",
+          isPrivate: !!r.private,
+          fork: !!r.fork,
+          archived: !!r.archived,
+          language: r.language ?? null,
+          pushedAt: r.pushedAt ?? null,
+          updatedAt: r.updatedAt ?? null,
+          topics: JSON.stringify(r.topics ?? []),
+        });
+      } catch (e) {
+        console.warn("[github-cache] failed to upsert", r.fullName, e);
+      }
+    }
+  }
+  async function loadCachedRepos(ownerFilter?: string): Promise<{ repos: GhRepoSummary[]; cachedAt: number | null; owners: string[] }> {
+    const rows = await storage.listGithubRepos();
+    const all = rows.map(rowToRepo);
+    const owners = Array.from(new Set(all.map((r) => r.owner))).sort();
+    const filtered = ownerFilter
+      ? all.filter((r) => r.owner.toLowerCase() === ownerFilter.toLowerCase())
+      : all;
+    const cachedAt = rows.reduce<number | null>((acc, r) => {
+      if (acc === null || (r.cachedAt ?? 0) > acc) return r.cachedAt ?? acc;
+      return acc;
+    }, null);
+    return { repos: filtered, cachedAt, owners };
+  }
+
+  /**
+   * Aggregated repo list. Tries live GitHub first; on success, caches the
+   * result and returns it with `source: "live"`. On failure, falls back to
+   * the SQLite cache (when populated) and returns `source: "cache"` with
+   * `stale: true` and a warning. Only returns 503 when neither live nor
+   * cache yields any repos.
+   */
   app.get("/api/github/repos", async (req, res) => {
+    const ownerParam = String(req.query.owner ?? "").trim();
+    const extraOwners = ownerParam ? [ownerParam] : undefined;
+    const q = String(req.query.q ?? "").toLowerCase();
+
+    const applyFilter = (list: GhRepoSummary[]) => q
+      ? list.filter((r) =>
+          r.fullName.toLowerCase().includes(q) ||
+          (r.description ?? "").toLowerCase().includes(q) ||
+          (r.language ?? "").toLowerCase().includes(q),
+        )
+      : list;
+
     try {
-      const ownerParam = String(req.query.owner ?? "").trim();
-      const extraOwners = ownerParam ? [ownerParam] : undefined;
       const result = await ghListRepos({ extraOwners });
-      const q = String(req.query.q ?? "").toLowerCase();
-      const filtered = q
-        ? result.repos.filter((r) =>
-            r.fullName.toLowerCase().includes(q) ||
-            (r.description ?? "").toLowerCase().includes(q) ||
-            (r.language ?? "").toLowerCase().includes(q),
-          )
-        : result.repos;
-      res.json({
+      /* Persist for fallback. Don't block the response on cache errors. */
+      void persistRepoCache(result.repos);
+      const filtered = applyFilter(result.repos);
+      return res.json({
         ok: true,
+        source: "live",
+        stale: false,
         repos: filtered,
         total: result.repos.length,
         owners: result.owners,
         ownerErrors: result.ownerErrors,
       });
-    } catch (err) { sendGhError(res, err); }
+    } catch (err) {
+      /* Live failed — try the cache. */
+      const code = err instanceof GhError ? err.code : "unknown";
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        const cached = await loadCachedRepos(ownerParam || undefined);
+        if (cached.repos.length > 0) {
+          const filtered = applyFilter(cached.repos);
+          return res.json({
+            ok: true,
+            source: "cache",
+            stale: true,
+            cachedAt: cached.cachedAt,
+            warning: "Live GitHub refresh failed; showing last cached repo list.",
+            liveError: { code, message },
+            repos: filtered,
+            total: cached.repos.length,
+            owners: cached.owners,
+            ownerErrors: [],
+          });
+        }
+      } catch (cacheErr) {
+        console.warn("[github-cache] read failed:", cacheErr);
+      }
+      /* No cache available — return a clean error. */
+      return sendGhError(res, err);
+    }
+  });
+
+  /**
+   * Force a refresh of the GitHub repo cache. Safe to call manually while
+   * fresh credentials are available; never exposes the underlying token.
+   */
+  app.post("/api/github/repos/refresh", async (req, res) => {
+    const ownerParam = String((req.query.owner ?? req.body?.owner) ?? "").trim();
+    const extraOwners = ownerParam ? [ownerParam] : undefined;
+    try {
+      const result = await ghListRepos({ extraOwners });
+      await persistRepoCache(result.repos);
+      return res.json({
+        ok: true,
+        cached: result.repos.length,
+        owners: result.owners,
+        ownerErrors: result.ownerErrors,
+        cachedAt: Date.now(),
+      });
+    } catch (err) {
+      return sendGhError(res, err);
+    }
   });
 
   app.get("/api/github/repos/:owner/:repo/branches", async (req, res) => {
     const repo = `${req.params.owner}/${req.params.repo}`;
-    try { res.json({ ok: true, repo, branches: await ghListBranches(repo) }); }
-    catch (err) { sendGhError(res, err); }
+    try {
+      const branches = await ghListBranches(repo);
+      return res.json({ ok: true, source: "live", repo, branches });
+    } catch (err) {
+      /* Fallback: surface at least the cached default branch so the wizard
+       * can proceed with a sensible default. */
+      try {
+        const cached = await storage.listGithubRepos();
+        const row = cached.find((r) => r.fullName.toLowerCase() === repo.toLowerCase());
+        if (row) {
+          return res.json({
+            ok: true,
+            source: "cache",
+            stale: true,
+            warning: "Live branch list unavailable; using cached default branch only.",
+            liveError: err instanceof GhError ? { code: err.code, message: err.message } : { code: "unknown", message: String(err) },
+            repo,
+            branches: [{ name: row.defaultBranch, protected: false, sha: "" }],
+          });
+        }
+      } catch (cacheErr) {
+        console.warn("[github-cache] branch fallback failed:", cacheErr);
+      }
+      return sendGhError(res, err);
+    }
   });
 
   app.get("/api/github/repos/:owner/:repo/detect", async (req, res) => {
@@ -111,8 +266,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!branch) return res.status(400).json({ error: "branch query parameter required", code: "bad-request" });
     try {
       const detection = await ghDetectConfig(repo, branch);
-      res.json({ ok: true, repo, branch, detection });
-    } catch (err) { sendGhError(res, err); }
+      res.json({ ok: true, source: "live", repo, branch, detection });
+    } catch (err) {
+      /* Detection is best-effort — when GitHub auth is unavailable, return a
+       * stub detection so the wizard can fall back to manual build fields and
+       * blueprint selection rather than blocking. */
+      const liveError = err instanceof GhError
+        ? { code: err.code, message: err.message }
+        : { code: "unknown", message: String(err) };
+      const fallbackDetection = {
+        framework: "unknown" as const,
+        packageManager: "unknown" as const,
+        buildCommand: null,
+        devCommand: null,
+        startCommand: null,
+        outputDir: null,
+        prisma: { present: false, schemaPath: null, migrationsPath: null },
+        docker: { dockerfile: false, compose: false },
+        vercel: { configFile: null },
+        githubActions: { workflowPaths: [] },
+        envExample: { path: null, keys: [] },
+        envSuggestions: [],
+        blueprintRecommendation: null,
+        recommendedProviders: ["github"],
+        language: null,
+        notes: ["Live GitHub inspection failed; fill in build settings manually or pick a blueprint."],
+      };
+      return res.json({
+        ok: true,
+        source: "fallback",
+        stale: true,
+        warning: "Could not inspect repo contents; using manual fallback.",
+        liveError,
+        repo,
+        branch,
+        detection: fallbackDetection,
+      });
+    }
   });
 
   /* --------------------------- blueprints -------------------------------- */

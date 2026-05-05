@@ -1,6 +1,7 @@
 import {
   projects, runs, stages, blueprints, providers,
   healthChecks, incidents, diagnoses, remediations, auditLogs,
+  githubRepos,
   type Project, type InsertProject,
   type Run, type InsertRun,
   type Stage, type InsertStage,
@@ -11,6 +12,7 @@ import {
   type Diagnosis, type InsertDiagnosis,
   type Remediation, type InsertRemediation,
   type AuditLog, type InsertAuditLog,
+  type InsertGithubRepo, type GithubRepoRow,
 } from "@shared/schema";
 import { eq, asc, desc } from "drizzle-orm";
 import { db, dbInfo } from "./db";
@@ -70,6 +72,11 @@ export interface IStorage {
   /* audit logs */
   listAuditLogs(scope?: string, refId?: number): Promise<AuditLog[]>;
   createAuditLog(a: InsertAuditLog): Promise<AuditLog>;
+
+  /* github repo cache */
+  listGithubRepos(): Promise<GithubRepoRow[]>;
+  upsertGithubRepo(r: InsertGithubRepo): Promise<GithubRepoRow>;
+  pruneGithubRepos(keepFullNames: string[]): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -216,6 +223,39 @@ export class DatabaseStorage implements IStorage {
   }
   async createAuditLog(a: InsertAuditLog): Promise<AuditLog> {
     return db.insert(auditLogs).values({ ...a, createdAt: Date.now() }).returning().get();
+  }
+
+  /* ----- github repo cache ----- */
+  async listGithubRepos(): Promise<GithubRepoRow[]> {
+    /* Sort by pushedAt desc; nulls last. */
+    const rows = db.select().from(githubRepos).all() as GithubRepoRow[];
+    return rows.sort((a, b) => {
+      const A = a.pushedAt ? Date.parse(a.pushedAt) : 0;
+      const B = b.pushedAt ? Date.parse(b.pushedAt) : 0;
+      return B - A;
+    });
+  }
+  async upsertGithubRepo(r: InsertGithubRepo): Promise<GithubRepoRow> {
+    const existing = db.select().from(githubRepos).where(eq(githubRepos.fullName, r.fullName)).get() as GithubRepoRow | undefined;
+    if (existing) {
+      return db.update(githubRepos)
+        .set({ ...r, cachedAt: Date.now() } as any)
+        .where(eq(githubRepos.id, existing.id))
+        .returning().get();
+    }
+    return db.insert(githubRepos).values({ ...r, cachedAt: Date.now() }).returning().get();
+  }
+  async pruneGithubRepos(keepFullNames: string[]): Promise<number> {
+    const all = await this.listGithubRepos();
+    const keep = new Set(keepFullNames);
+    let removed = 0;
+    for (const row of all) {
+      if (!keep.has(row.fullName)) {
+        db.delete(githubRepos).where(eq(githubRepos.id, row.id)).run();
+        removed++;
+      }
+    }
+    return removed;
   }
 }
 

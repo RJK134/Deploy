@@ -225,6 +225,24 @@ CREATE TABLE IF NOT EXISTS remediations (
   created_at INTEGER NOT NULL,
   completed_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS github_repos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  full_name TEXT NOT NULL UNIQUE,
+  owner TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  url TEXT,
+  clone_url TEXT,
+  default_branch TEXT NOT NULL DEFAULT 'main',
+  is_private INTEGER NOT NULL DEFAULT 0,
+  fork INTEGER NOT NULL DEFAULT 0,
+  archived INTEGER NOT NULL DEFAULT 0,
+  language TEXT,
+  pushed_at TEXT,
+  updated_at TEXT,
+  topics_json TEXT NOT NULL DEFAULT '[]',
+  cached_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   scope TEXT NOT NULL,

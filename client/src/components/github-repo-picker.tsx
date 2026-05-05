@@ -66,9 +66,31 @@ interface RepoPayload {
   total: number;
   owners?: string[];
   ownerErrors?: Array<{ owner: string; code: string; message: string }>;
+  source?: "live" | "cache";
+  stale?: boolean;
+  cachedAt?: number | null;
+  warning?: string;
+  liveError?: { code: string; message: string };
 }
-interface BranchPayload { ok: boolean; repo: string; branches: GhBranch[]; }
-interface DetectPayload { ok: boolean; repo: string; branch: string; detection: DetectionResult; }
+interface BranchPayload {
+  ok: boolean;
+  repo: string;
+  branches: GhBranch[];
+  source?: "live" | "cache";
+  stale?: boolean;
+  warning?: string;
+  liveError?: { code: string; message: string };
+}
+interface DetectPayload {
+  ok: boolean;
+  repo: string;
+  branch: string;
+  detection: DetectionResult;
+  source?: "live" | "fallback";
+  stale?: boolean;
+  warning?: string;
+  liveError?: { code: string; message: string };
+}
 
 interface ApiError { error: string; code?: string; detail?: string }
 
@@ -88,6 +110,18 @@ async function fetchOrThrow<T>(url: string): Promise<T> {
     throw err;
   });
   return (await res.json()) as T;
+}
+
+function timeAgoMs(ms: number): string {
+  const diff = Date.now() - ms;
+  if (!Number.isFinite(diff) || diff < 0) return "—";
+  const m = Math.floor(diff / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
 }
 
 function timeAgo(iso: string | null): string {
@@ -221,12 +255,22 @@ export function GithubRepoPicker({
     <div className="space-y-5" data-testid="github-repo-picker">
       <div>
         <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <Github className="h-4 w-4 text-foreground/80" />
             <div className="text-sm font-medium">Pick a GitHub repository</div>
             {reposQ.data && (
               <Badge variant="outline" className="text-[10px] font-mono" data-testid="badge-repo-count">
                 {filtered.length}/{reposQ.data.total}
+              </Badge>
+            )}
+            {reposQ.data?.source === "live" && (
+              <Badge variant="outline" className="text-[10px] font-mono border-emerald-500/40 text-emerald-600 dark:text-emerald-400" data-testid="badge-source-live">
+                live
+              </Badge>
+            )}
+            {reposQ.data?.source === "cache" && (
+              <Badge variant="outline" className="text-[10px] font-mono border-amber-500/40 text-amber-600 dark:text-amber-400" data-testid="badge-source-cache">
+                cached{reposQ.data.cachedAt ? ` · ${timeAgoMs(reposQ.data.cachedAt)}` : ""}
               </Badge>
             )}
           </div>
@@ -242,6 +286,20 @@ export function GithubRepoPicker({
             Refresh
           </Button>
         </div>
+
+        {reposQ.data?.source === "cache" && reposQ.data?.warning && (
+          <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-600 dark:text-amber-400 flex items-start gap-2" data-testid="cache-warning">
+            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <div>{reposQ.data.warning}</div>
+              {reposQ.data.liveError && (
+                <div className="font-mono mt-0.5 text-[10px] opacity-80">
+                  {reposQ.data.liveError.code}: {reposQ.data.liveError.message}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* filters */}
         <div className="grid grid-cols-1 md:grid-cols-12 gap-2 mb-3">
@@ -429,28 +487,36 @@ export function GithubRepoPicker({
                   <Skeleton className="h-9 w-full" data-testid="branches-loading" />
                 ) : branchesQ.error ? (
                   <div className="text-xs text-amber-500" data-testid="branches-error">
-                    Could not load branches: {(branchesQ.error as Error).message}
+                    Could not load branches: {(branchesQ.error as Error).message}. Continuing with default branch{" "}
+                    <span className="font-mono">{selectedRepo.defaultBranch}</span>.
                   </div>
                 ) : (
-                  <Select
-                    value={selectedBranch ?? selectedRepo.defaultBranch}
-                    onValueChange={onSelectBranch}
-                  >
-                    <SelectTrigger data-testid="select-branch"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {(branchesQ.data?.branches ?? []).map((b) => (
-                        <SelectItem key={b.name} value={b.name} data-testid={`option-branch-${b.name}`}>
-                          <span className="font-mono">{b.name}</span>
-                          {b.name === selectedRepo.defaultBranch && (
-                            <Badge variant="outline" className="text-[9px] ml-2">default</Badge>
-                          )}
-                          {b.protected && (
-                            <Badge variant="outline" className="text-[9px] ml-2">protected</Badge>
-                          )}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <>
+                    <Select
+                      value={selectedBranch ?? selectedRepo.defaultBranch}
+                      onValueChange={onSelectBranch}
+                    >
+                      <SelectTrigger data-testid="select-branch"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {(branchesQ.data?.branches ?? []).map((b) => (
+                          <SelectItem key={b.name} value={b.name} data-testid={`option-branch-${b.name}`}>
+                            <span className="font-mono">{b.name}</span>
+                            {b.name === selectedRepo.defaultBranch && (
+                              <Badge variant="outline" className="text-[9px] ml-2">default</Badge>
+                            )}
+                            {b.protected && (
+                              <Badge variant="outline" className="text-[9px] ml-2">protected</Badge>
+                            )}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {branchesQ.data?.source === "cache" && branchesQ.data?.warning && (
+                      <div className="text-[11px] text-amber-500 mt-1" data-testid="branches-cache-warning">
+                        {branchesQ.data.warning}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
               <div>
@@ -469,6 +535,7 @@ export function GithubRepoPicker({
               loading={detectQ.isLoading}
               error={detectQ.error as (Error & { code?: string }) | null}
               data={detectQ.data?.detection ?? null}
+              warning={detectQ.data?.source === "fallback" ? (detectQ.data?.warning ?? "Manual fallback in use.") : null}
             />
           </CardContent>
         </Card>
@@ -517,11 +584,12 @@ function RepoErrorState({
 }
 
 function DetectionPanel({
-  loading, error, data,
+  loading, error, data, warning,
 }: {
   loading: boolean;
   error: (Error & { code?: string }) | null;
   data: DetectionResult | null;
+  warning?: string | null;
 }) {
   if (loading) {
     return (
@@ -545,7 +613,17 @@ function DetectionPanel({
       <div className="flex items-center gap-2">
         <FileCode className="h-4 w-4 text-primary" />
         <div className="text-sm font-medium">Auto-detected configuration</div>
+        {warning && (
+          <Badge variant="outline" className="text-[10px] font-mono border-amber-500/40 text-amber-600 dark:text-amber-400 ml-auto" data-testid="badge-detection-fallback">
+            manual fallback
+          </Badge>
+        )}
       </div>
+      {warning && (
+        <div className="text-[11px] text-amber-600 dark:text-amber-400" data-testid="detection-warning">
+          {warning}
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
         <DKV k="Framework"        v={data.framework} testid="detect-framework" />
         <DKV k="Package manager"  v={data.packageManager} testid="detect-pm" />

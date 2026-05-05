@@ -137,6 +137,25 @@ export const remediations = pgTable("remediations", {
   completedAt: bigint("completed_at", { mode: "number" }),
 });
 
+export const githubRepos = pgTable("github_repos", {
+  id: serial("id").primaryKey(),
+  fullName: text("full_name").notNull().unique(),
+  owner: text("owner").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  url: text("url"),
+  cloneUrl: text("clone_url"),
+  defaultBranch: text("default_branch").notNull().default("main"),
+  isPrivate: boolean("is_private").notNull().default(false),
+  fork: boolean("fork").notNull().default(false),
+  archived: boolean("archived").notNull().default(false),
+  language: text("language"),
+  pushedAt: text("pushed_at"),
+  updatedAt: text("updated_at"),
+  topics: text("topics_json").notNull().default("[]"),
+  cachedAt: bigint("cached_at", { mode: "number" }).notNull(),
+});
+
 export const auditLogs = pgTable("audit_logs", {
   id: serial("id").primaryKey(),
   scope: text("scope").notNull(),

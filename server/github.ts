@@ -16,12 +16,25 @@ export class GhError extends Error {
   code: "auth-missing" | "rate-limit" | "not-found" | "network" | "unknown";
   status: number;
   detail?: string;
+  /** Exit code from the underlying CLI process, when applicable. Never used as HTTP status. */
+  exitCode?: number;
   constructor(code: GhError["code"], message: string, status = 500, detail?: string) {
     super(message);
     this.code = code;
-    this.status = status;
+    this.status = sanitizeHttpStatus(status);
     this.detail = detail;
   }
+}
+
+/**
+ * Coerce an arbitrary number into a valid HTTP status code (100-599).
+ * Process exit codes (e.g. 0, 1) and other invalid values fall back to 500
+ * so we never trip Express's `RangeError: Invalid status code` check.
+ */
+function sanitizeHttpStatus(n: unknown): number {
+  const v = typeof n === "number" && Number.isFinite(n) ? Math.floor(n) : 500;
+  if (v >= 100 && v <= 599) return v;
+  return 500;
 }
 
 interface RunResult { stdout: string; stderr: string; code: number }
@@ -55,19 +68,34 @@ function runGh(args: string[], opts: { input?: string; timeoutMs?: number } = {}
   });
 }
 
-function classifyGhError(stderr: string, status: number): GhError {
+/**
+ * Build a GhError from gh CLI stderr.
+ *
+ * IMPORTANT: the second argument is the CLI **exit code**, never an HTTP
+ * status. Process exit codes (typically 1–255) must not leak into Express
+ * response status codes — that path crashes the response handler with
+ * `RangeError: Invalid status code: 1`. We classify by stderr content and
+ * always use a real HTTP status (4xx/5xx) on the GhError.
+ */
+function classifyGhError(stderr: string, exitCode: number): GhError {
   const lower = stderr.toLowerCase();
+  let err: GhError;
   if (lower.includes("not authenticated") || lower.includes("authentication required") ||
-      lower.includes("token is invalid") || lower.includes("bad credentials")) {
-    return new GhError("auth-missing", "GitHub authentication missing or invalid", 401, stderr.trim());
+      lower.includes("token is invalid") || lower.includes("bad credentials") ||
+      lower.includes("requires authentication") || lower.includes("login required")) {
+    err = new GhError("auth-missing", "GitHub authentication missing or invalid", 503, stderr.trim());
+  } else if (lower.includes("rate limit") || lower.includes("api rate limit exceeded")) {
+    err = new GhError("rate-limit", "GitHub API rate limit exceeded", 429, stderr.trim());
+  } else if (lower.includes("404") || lower.includes("not found")) {
+    err = new GhError("not-found", "Resource not found on GitHub", 404, stderr.trim());
+  } else {
+    /* Unknown gh CLI failure — surface as 503 (upstream unavailable) rather
+     * than 500, so the route layer / cache fallback can treat it as a
+     * transient upstream issue. */
+    err = new GhError("unknown", "GitHub CLI call failed", 503, stderr.trim() || `gh exited with code ${exitCode}`);
   }
-  if (lower.includes("rate limit") || lower.includes("api rate limit exceeded")) {
-    return new GhError("rate-limit", "GitHub API rate limit exceeded", 429, stderr.trim());
-  }
-  if (lower.includes("404") || lower.includes("not found")) {
-    return new GhError("not-found", "Resource not found on GitHub", 404, stderr.trim());
-  }
-  return new GhError("unknown", "GitHub CLI call failed", status || 500, stderr.trim());
+  err.exitCode = exitCode;
+  return err;
 }
 
 async function ghApi<T = unknown>(path: string, params: Record<string, string | number | undefined> = {}): Promise<T> {

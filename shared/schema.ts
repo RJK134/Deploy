@@ -197,6 +197,37 @@ export const insertRemediationSchema = createInsertSchema(remediations).omit({ i
 export type InsertRemediation = z.infer<typeof insertRemediationSchema>;
 export type Remediation = typeof remediations.$inferSelect;
 
+/* ----------------------------- github repo cache ------------------------- */
+/**
+ * Cached GitHub repo metadata, populated whenever /api/github/repos succeeds
+ * with live credentials. Used as a fallback when the gh CLI loses auth so the
+ * picker keeps showing repos instead of returning 503.
+ *
+ * No tokens or secret material live here — only public-ish repo metadata that
+ * the user already has access to. Rows are unique by full_name.
+ */
+export const githubRepos = sqliteTable("github_repos", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  fullName: text("full_name").notNull().unique(),       // owner/repo
+  owner: text("owner").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  url: text("url"),
+  cloneUrl: text("clone_url"),
+  defaultBranch: text("default_branch").notNull().default("main"),
+  isPrivate: integer("is_private", { mode: "boolean" }).notNull().default(false),
+  fork: integer("fork", { mode: "boolean" }).notNull().default(false),
+  archived: integer("archived", { mode: "boolean" }).notNull().default(false),
+  language: text("language"),
+  pushedAt: text("pushed_at"),
+  updatedAt: text("updated_at"),
+  topics: text("topics_json").notNull().default("[]"),  // JSON: string[]
+  cachedAt: integer("cached_at").notNull(),
+});
+export const insertGithubRepoSchema = createInsertSchema(githubRepos).omit({ id: true, cachedAt: true });
+export type InsertGithubRepo = z.infer<typeof insertGithubRepoSchema>;
+export type GithubRepoRow = typeof githubRepos.$inferSelect;
+
 export const auditLogs = sqliteTable("audit_logs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   scope: text("scope").notNull(),                  // fixbot|run|provider|migration
