@@ -271,6 +271,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       try {
         const cached = await loadCachedRepos(ownerParam || undefined);
         if (cached.repos.length > 0) {
+          const filteredCache = applyFilters(cached.repos);
           return res.json({
             ok: true,
             source: "cache",
@@ -281,8 +282,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               ? "No GitHub credential available; showing last cached repo list. Connect GitHub to refresh."
               : "Live GitHub refresh failed; showing last cached repo list.",
             liveError: { code, message },
-            repos: cached.repos,
-            total: cached.repos.length,
+            repos: filteredCache,
+            total: filteredCache.length,
             owners: cached.owners,
             ownerErrors: [],
             ownersTried: cached.owners,
