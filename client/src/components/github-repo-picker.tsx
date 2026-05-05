@@ -285,9 +285,14 @@ export function GithubRepoPicker({
     || (diagQ.data && diagQ.data.authSource === null && (reposQ.data?.repos.length ?? 0) === 0);
 
   const onConnected = async () => {
-    /* Refresh both diag and repo list on successful connect. */
-    await Promise.all([diagQ.refetch(), reposQ.refetch()]);
-    queryClient.invalidateQueries({ queryKey: ["/api/connections"] });
+    /* Refresh auth-sensitive queries on successful connect. */
+    await Promise.all([
+      diagQ.refetch(),
+      reposQ.refetch(),
+      branchesQ.refetch(),
+      detectQ.refetch(),
+      queryClient.invalidateQueries({ queryKey: ["/api/connections"] }),
+    ]);
   };
 
   return (
