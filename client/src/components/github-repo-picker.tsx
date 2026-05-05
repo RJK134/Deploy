@@ -905,7 +905,7 @@ function GithubConnectCard({
               Create a PAT on GitHub <ExternalLink className="h-3 w-3" />
             </a>
             <span className="text-[11px] text-muted-foreground">
-              Required scopes: <code className="font-mono">repo</code>, <code className="font-mono">read:org</code>, <code className="font-mono">workflow</code>
+              Required scope: <code className="font-mono">repo</code>; recommended scopes: <code className="font-mono">read:org</code>, <code className="font-mono">workflow</code>
             </span>
           </div>
         </form>
