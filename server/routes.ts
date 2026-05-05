@@ -112,20 +112,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const auth = await resolveActiveToken("github").catch(() => null);
     const cliEnabled = (process.env.DEPLOYOPS_DISABLE_GH_CLI ?? "").trim() !== "1";
     const envTokenPresent = !!((process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN) ?? "").trim();
+    let authSource = auth?.source ?? null;
     let viewer: { login: string; name: string | null } | null = null;
     let viewerError: { code: string; message: string } | null = null;
-    if (auth) {
-      try {
-        const v = await withGitHubToken(auth.token, () => ghViewer(), auth.source);
-        viewer = { login: v.login, name: v.name };
-      } catch (err) {
-        if (err instanceof GhError) viewerError = { code: err.code, message: err.message };
-        else viewerError = { code: "unknown", message: (err as Error).message ?? String(err) };
+    try {
+      const v = auth
+        ? await withGitHubToken(auth.token, () => ghViewer(), auth.source)
+        : await ghViewer();
+      viewer = { login: v.login, name: v.name };
+      if (!authSource) {
+        authSource = envTokenPresent ? "env" : (cliEnabled ? "gh-cli" : null);
       }
+    } catch (err) {
+      if (err instanceof GhError) viewerError = { code: err.code, message: err.message };
+      else viewerError = { code: "unknown", message: (err as Error).message ?? String(err) };
     }
     res.json({
       ok: true,
-      authSource: auth?.source ?? null,
+      authSource,
       hasStoredConnection: auth?.source === "connection",
       hasEnvToken: envTokenPresent,
       ghCliFallbackEnabled: cliEnabled,
