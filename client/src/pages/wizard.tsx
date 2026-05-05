@@ -448,7 +448,8 @@ function StepRepository({
         <CardTitle className="text-sm">Step 1 — choose a live GitHub repository</CardTitle>
       </CardHeader>
       <p className="text-sm text-muted-foreground mb-4">
-        Pulled live from <code className="font-mono text-foreground">/user/repos</code> via the authenticated <code className="font-mono text-foreground">gh</code> CLI.
+        Pulled live from GitHub using your stored connection token (or
+        {" "}<code className="font-mono text-foreground">GITHUB_TOKEN</code> env var).
         Your token never leaves the server. After you pick a branch, we'll inspect the repo and pre-fill build, providers, and env vars.
       </p>
       <GithubRepoPicker

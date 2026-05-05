@@ -102,11 +102,47 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.status(500).json({ error: msg, code: "unknown" });
   }
 
+  /**
+   * Diagnostic endpoint — never exposes tokens. Reports whether a stored
+   * connection token, env var, or `gh` CLI fallback is available. Useful for
+   * the wizard to render a precise inline-connect call-to-action when repo
+   * loading fails.
+   */
+  app.get("/api/github/diag", async (_req, res) => {
+    const auth = await resolveActiveToken("github").catch(() => null);
+    const cliEnabled = (process.env.DEPLOYOPS_DISABLE_GH_CLI ?? "").trim() !== "1";
+    const envTokenPresent = !!((process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN) ?? "").trim();
+    let authSource = auth?.source ?? null;
+    let viewer: { login: string; name: string | null } | null = null;
+    let viewerError: { code: string; message: string } | null = null;
+    try {
+      const v = auth
+        ? await withGitHubToken(auth.token, () => ghViewer(), auth.source)
+        : await ghViewer();
+      viewer = { login: v.login, name: v.name };
+      if (!authSource) {
+        authSource = envTokenPresent ? "env" : (cliEnabled ? "gh-cli" : null);
+      }
+    } catch (err) {
+      if (err instanceof GhError) viewerError = { code: err.code, message: err.message };
+      else viewerError = { code: "unknown", message: (err as Error).message ?? String(err) };
+    }
+    res.json({
+      ok: true,
+      authSource,
+      hasStoredConnection: auth?.source === "connection",
+      hasEnvToken: envTokenPresent,
+      ghCliFallbackEnabled: cliEnabled,
+      viewer,
+      viewerError,
+    });
+  });
+
   app.get("/api/github/viewer", async (_req, res) => {
     try {
       const auth = await resolveActiveToken("github");
-      const viewer = await withGitHubToken(auth?.token ?? null, () => ghViewer());
-      res.json({ ok: true, viewer, source: auth?.source ?? "cli" });
+      const viewer = await withGitHubToken(auth?.token ?? null, () => ghViewer(), auth?.source ?? "none");
+      res.json({ ok: true, viewer, authSource: auth?.source ?? "cli" });
     }
     catch (err) { sendGhError(res, err); }
   });
@@ -181,26 +217,46 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const extraOwners = ownerParam ? [ownerParam] : undefined;
     const q = String(req.query.q ?? "").toLowerCase();
 
-    const applyFilter = (list: GhRepoSummary[]) => q
-      ? list.filter((r) =>
+    const applyFilters = (list: GhRepoSummary[]) => {
+      let out = list;
+      if (ownerParam) {
+        out = out.filter((r) => r.owner.toLowerCase() === ownerParam.toLowerCase());
+      }
+      if (q) {
+        out = out.filter((r) =>
           r.fullName.toLowerCase().includes(q) ||
           (r.description ?? "").toLowerCase().includes(q) ||
           (r.language ?? "").toLowerCase().includes(q),
-        )
-      : list;
+        );
+      }
+      return out;
+    };
 
     try {
       const auth = await resolveActiveToken("github");
-      const result = await withGitHubToken(auth?.token ?? null, () => ghListRepos({ extraOwners }));
+      const authSource: "connection" | "env" | "cli" = auth?.source ?? "cli";
+      const result = await withGitHubToken(
+        auth?.token ?? null,
+        () => ghListRepos({ extraOwners }),
+        auth?.source ?? "none",
+      );
+      /* Avoid a redundant ghViewer() call here: ghListRepos() already performs
+       * authenticated account discovery internally. Preserve the response shape
+       * without adding another /user request. */
+      const connectedAccount: { login: string; name: string | null } | null = null;
       /* Persist for fallback. Don't block the response on cache errors. */
       void persistRepoCache(result.repos);
-      const filtered = applyFilter(result.repos);
-      /* `authSource` distinguishes: stored connection token > env token > unauthenticated CLI. */
-      const authSource: "connection" | "env" | "cli" = auth?.source ?? "cli";
+      const filtered = applyFilters(result.repos);
+      const ownersTried = Array.from(new Set([
+        ...result.owners,
+        ...result.ownerErrors.map((e) => e.owner),
+      ])).filter(Boolean);
       return res.json({
         ok: true,
         source: "live",
         authSource,
+        connectedAccount,
+        ownersTried,
         stale: false,
         repos: filtered,
         total: result.repos.length,
@@ -208,30 +264,35 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ownerErrors: result.ownerErrors,
       });
     } catch (err) {
-      /* Live failed — try the cache. */
+      /* Live failed — try the cache as backup. We always label cache results
+       * stale so the UI never shows them as "fresh / live". */
       const code = err instanceof GhError ? err.code : "unknown";
       const message = err instanceof Error ? err.message : String(err);
       try {
         const cached = await loadCachedRepos(ownerParam || undefined);
         if (cached.repos.length > 0) {
-          const filtered = applyFilter(cached.repos);
+          const filteredCache = applyFilters(cached.repos);
           return res.json({
             ok: true,
             source: "cache",
+            authSource: "cache",
             stale: true,
             cachedAt: cached.cachedAt,
-            warning: "Live GitHub refresh failed; showing last cached repo list.",
+            warning: code === "auth-missing"
+              ? "No GitHub credential available; showing last cached repo list. Connect GitHub to refresh."
+              : "Live GitHub refresh failed; showing last cached repo list.",
             liveError: { code, message },
-            repos: filtered,
-            total: cached.repos.length,
+            repos: filteredCache,
+            total: filteredCache.length,
             owners: cached.owners,
             ownerErrors: [],
+            ownersTried: cached.owners,
           });
         }
       } catch (cacheErr) {
         console.warn("[github-cache] read failed:", cacheErr);
       }
-      /* No cache available — return a clean error. */
+      /* No cache available — return a clean, actionable error. */
       return sendGhError(res, err);
     }
   });
@@ -245,7 +306,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const extraOwners = ownerParam ? [ownerParam] : undefined;
     try {
       const auth = await resolveActiveToken("github");
-      const result = await withGitHubToken(auth?.token ?? null, () => ghListRepos({ extraOwners }));
+      const result = await withGitHubToken(
+        auth?.token ?? null,
+        () => ghListRepos({ extraOwners }),
+        auth?.source ?? "none",
+      );
       await persistRepoCache(result.repos);
       return res.json({
         ok: true,
@@ -264,8 +329,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const repo = `${req.params.owner}/${req.params.repo}`;
     try {
       const auth = await resolveActiveToken("github");
-      const branches = await withGitHubToken(auth?.token ?? null, () => ghListBranches(repo));
-      return res.json({ ok: true, source: "live", repo, branches });
+      const branches = await withGitHubToken(
+        auth?.token ?? null,
+        () => ghListBranches(repo),
+        auth?.source ?? "none",
+      );
+      return res.json({ ok: true, source: "live", authSource: auth?.source ?? "cli", repo, branches });
     } catch (err) {
       /* Fallback: surface at least the cached default branch so the wizard
        * can proceed with a sensible default. */
@@ -296,8 +365,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!branch) return res.status(400).json({ error: "branch query parameter required", code: "bad-request" });
     try {
       const auth = await resolveActiveToken("github");
-      const detection = await withGitHubToken(auth?.token ?? null, () => ghDetectConfig(repo, branch));
-      res.json({ ok: true, source: "live", repo, branch, detection });
+      const detection = await withGitHubToken(
+        auth?.token ?? null,
+        () => ghDetectConfig(repo, branch),
+        auth?.source ?? "none",
+      );
+      res.json({ ok: true, source: "live", authSource: auth?.source ?? "cli", repo, branch, detection });
     } catch (err) {
       /* Detection is best-effort — when GitHub auth is unavailable, return a
        * stub detection so the wizard can fall back to manual build fields and
