@@ -240,12 +240,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         () => ghListRepos({ extraOwners }),
         auth?.source ?? "none",
       );
-      /* Capture the authenticated account when possible — useful diagnostic. */
-      let connectedAccount: { login: string; name: string | null } | null = null;
-      try {
-        const v = await withGitHubToken(auth?.token ?? null, () => ghViewer(), auth?.source ?? "none");
-        connectedAccount = { login: v.login, name: v.name };
-      } catch { /* non-fatal */ }
+      /* Avoid a redundant ghViewer() call here: ghListRepos() already performs
+       * authenticated account discovery internally. Preserve the response shape
+       * without adding another /user request. */
+      const connectedAccount: { login: string; name: string | null } | null = null;
       /* Persist for fallback. Don't block the response on cache errors. */
       void persistRepoCache(result.repos);
       const filtered = applyFilters(result.repos);
