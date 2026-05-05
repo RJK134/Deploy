@@ -797,10 +797,9 @@ function GithubConnectCard({
     e.preventDefault();
     setErr(null); setWarn(null); setBusy(true);
     try {
-      const res = await fetch("/api/connections/github/connect-token", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: token.trim(), confirm: confirm.trim() }),
+      const res = await apiRequest("POST", "/api/connections/github/connect-token", {
+        token: token.trim(),
+        confirm: confirm.trim(),
       });
       const text = await res.text();
       let body: any = null;
