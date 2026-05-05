@@ -4,7 +4,11 @@ import { CheckCircle2, CircleDashed, CircleDot, AlertTriangle, XCircle, Pause, L
 type Status =
   | "succeeded" | "running" | "pending" | "failed" | "queued" | "paused" | "skipped"
   | "connected" | "disconnected" | "partial"
-  | "live" | "dry-run";
+  | "live" | "dry-run"
+  /* Live Vercel deployment lifecycle. */
+  | "live_pending" | "live_running" | "live_succeeded" | "live_failed" | "live_blocked"
+  /* Validated dry-run plan (NOT a real deployment). */
+  | "validated_dry_run";
 
 const map: Record<string, { icon: any; tone: string; label?: string }> = {
   succeeded: { icon: CheckCircle2, tone: "text-emerald-500 bg-emerald-500/10 border-emerald-500/30" },
@@ -19,6 +23,12 @@ const map: Record<string, { icon: any; tone: string; label?: string }> = {
   partial:   { icon: AlertTriangle, tone: "text-amber-500 bg-amber-500/10 border-amber-500/30" },
   live:      { icon: CircleDot, tone: "text-primary bg-primary/10 border-primary/30" },
   "dry-run": { icon: CircleDashed, tone: "text-muted-foreground bg-muted/40 border-border" },
+  live_pending: { icon: CircleDot, tone: "text-primary bg-primary/10 border-primary/30", label: "live · pending" },
+  live_running: { icon: Loader2,  tone: "text-primary bg-primary/10 border-primary/30 [&_svg]:animate-spin", label: "live · building" },
+  live_succeeded: { icon: CheckCircle2, tone: "text-emerald-500 bg-emerald-500/10 border-emerald-500/30", label: "live · ready" },
+  live_failed: { icon: XCircle, tone: "text-destructive bg-destructive/10 border-destructive/30", label: "live · failed" },
+  live_blocked: { icon: AlertTriangle, tone: "text-amber-500 bg-amber-500/10 border-amber-500/30", label: "live · blocked" },
+  validated_dry_run: { icon: CheckCircle2, tone: "text-muted-foreground bg-muted/40 border-border", label: "dry-run · validated" },
 };
 
 export function StatusPill({ status, className }: { status: Status; className?: string }) {

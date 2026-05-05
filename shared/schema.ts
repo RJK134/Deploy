@@ -48,15 +48,45 @@ export type InsertProject = z.infer<typeof insertProjectSchema>;
 export type Project = typeof projects.$inferSelect;
 
 /* ---------------------------------- runs ---------------------------------- */
+/**
+ * A run represents one orchestrated deployment attempt.
+ *
+ * `mode` distinguishes:
+ *   - `dry-run`  — plan only; no provider mutations.
+ *   - `live`     — real provider calls. Live runs go through gates and only
+ *                  reach `live_succeeded` when the upstream provider returns
+ *                  a ready/completed deployment with a public URL.
+ *
+ * `status` values:
+ *   - dry-run lifecycle: queued | running | validated_dry_run | failed | paused
+ *   - live   lifecycle:  queued | live_blocked | live_pending | live_running |
+ *                        live_succeeded | live_failed
+ *
+ * Legacy values (`succeeded`) are kept for backward-compat with seed data
+ * but new dry-run completions write `validated_dry_run` instead so the UI
+ * never confuses a plan with a real deployment.
+ */
 export const runs = sqliteTable("runs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   projectId: integer("project_id").notNull(),
   environment: text("environment").notNull(),      // test|demo|deploy
   mode: text("mode").notNull().default("dry-run"), // dry-run|live
-  status: text("status").notNull().default("queued"), // queued|running|succeeded|failed|paused
+  status: text("status").notNull().default("queued"),
   providers: text("providers_json").notNull().default("[]"), // JSON string[]
   envVars: text("env_vars_json").notNull().default("[]"),    // JSON {key,value,source}[]
   notes: text("notes"),
+  /* Vercel-specific live deployment metadata (populated for live runs). */
+  vercelDeploymentId: text("vercel_deployment_id"),
+  vercelProjectId: text("vercel_project_id"),
+  vercelProjectName: text("vercel_project_name"),
+  vercelTeamId: text("vercel_team_id"),
+  vercelStatus: text("vercel_status"),                       // upstream READY|BUILDING|ERROR|...
+  vercelUrl: text("vercel_url"),                             // public deployment URL (https)
+  vercelAliasUrl: text("vercel_alias_url"),                  // primary alias URL if any
+  vercelInspectorUrl: text("vercel_inspector_url"),
+  vercelErrorMessage: text("vercel_error_message"),
+  vercelEvents: text("vercel_events_json").notNull().default("[]"), // JSON: provider events / log messages (real, not synthetic)
+  vercelLastPolledAt: integer("vercel_last_polled_at"),
   startedAt: integer("started_at"),
   finishedAt: integer("finished_at"),
   createdAt: integer("created_at").notNull(),

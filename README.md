@@ -11,6 +11,15 @@ credentials and live mode are enabled.
 
 ## What's new
 
+- **Live Vercel deployments** — the New Deploy wizard can now create
+  **real Vercel deployments** for selected GitHub repo + branch, not
+  simulated ones. Live runs go through readiness gates (Vercel token
+  resolved, Vercel-GitHub integration installed, `DEPLOYOPS_LIVE=1`,
+  real GitHub source) and only reach `live_succeeded` when Vercel itself
+  reports the deployment as ready with a public URL. Dry-runs reach
+  `validated_dry_run`, never `succeeded`. Honest failure states:
+  `live_blocked` (clear remediation list), `live_failed` (real upstream
+  error, no synthetic logs).
 - **Connection Center** (`/providers`) — production-grade auth layer for all
   five providers. GitHub OAuth web flow + PAT fallback, token entry forms for
   Vercel / Neon / Prisma / Railway, validation against each provider's API,
@@ -105,13 +114,56 @@ orchestration:
 3. Open **Connection Center** and connect each provider you need
    (GitHub OAuth or PAT, Vercel / Neon / Prisma / Railway tokens).
 4. Flip each provider's **Live** switch on its connection card.
-5. Implement the marked adapter TODOs in `server/providers.ts` and
-   `server/fixbot.ts`.
 
 The **Live Readiness** page reflects each gate in real time.
 
 Even with all of the above, Fix Bot remediations require explicit approval
 unless the incident is at `safe-auto-fix` autonomy.
+
+### Honest status of live operations
+
+- **What is real today:**
+  - GitHub repo discovery, branch listing, and config detection (server-side
+    via authenticated `gh` CLI or stored OAuth/PAT token).
+  - **Vercel live deployments** for GitHub-sourced projects: the adapter calls
+    `POST /v13/deployments` against the Vercel REST API, polls
+    `GET /v13/deployments/{id}` until terminal, fetches deployment events from
+    `GET /v3/deployments/{id}/events`. Stored Vercel connection token is
+    preferred; `VERCEL_TOKEN` env is the fallback. The token never leaves the
+    server and is never logged.
+- **What is still NOT real:**
+  - Neon database provisioning / branching — the wizard's "provision database"
+    stage is a dry-run plan only.
+  - Prisma migrations against live databases — same.
+  - Railway deploys — manual CLI guidance only; no real provider call.
+- **Required for a live Vercel deploy to succeed:**
+  - Vercel-GitHub integration installed for the repo's GitHub org/user.
+    DeployOps cannot install this for you. If it's missing, the run lands in
+    `live_blocked` with code `vercel-github-integration-required`.
+  - At least one Vercel project linked to the same `owner/name`. Importing the
+    repo once on https://vercel.com/new creates this. If missing, the run
+    lands in `live_blocked` with `no-linked-project`.
+  - `DEPLOYOPS_LIVE=1` set on the DeployOps server.
+  - A confirmation phrase on the request body (`{ confirm: "I UNDERSTAND" }`)
+    or `DEPLOYOPS_CONFIRM_LIVE_DEPLOY=0` set explicitly. The UI sends this
+    automatically when you click **Start live deployment** on the run page
+    after a browser confirm dialog.
+
+### How to trigger a live Vercel deployment
+
+After the gates above are satisfied:
+
+1. From `/wizard`, pick a real GitHub repo and branch.
+2. On the **Review** step, switch to **Live deploy**. The readiness panel will
+   show any blockers; clear them before continuing.
+3. Click **Queue live run**. This creates the run in `queued` state — no
+   external action yet.
+4. On the run page, click **Start live deployment** and confirm. Only this
+   click triggers `POST /v13/deployments`.
+5. The run page polls `/api/runs/:id/live-status` every 3 seconds and renders
+   real Vercel events as they arrive. When Vercel reports `READY`, the run
+   moves to `live_succeeded` and the **Open live app** button appears with the
+   real public URL.
 
 ## Fix Bot operating model
 

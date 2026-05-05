@@ -139,6 +139,17 @@ CREATE TABLE IF NOT EXISTS runs (
   providers_json TEXT NOT NULL DEFAULT '[]',
   env_vars_json TEXT NOT NULL DEFAULT '[]',
   notes TEXT,
+  vercel_deployment_id TEXT,
+  vercel_project_id TEXT,
+  vercel_project_name TEXT,
+  vercel_team_id TEXT,
+  vercel_status TEXT,
+  vercel_url TEXT,
+  vercel_alias_url TEXT,
+  vercel_inspector_url TEXT,
+  vercel_error_message TEXT,
+  vercel_events_json TEXT NOT NULL DEFAULT '[]',
+  vercel_last_polled_at INTEGER,
   started_at INTEGER,
   finished_at INTEGER,
   created_at INTEGER NOT NULL
@@ -301,6 +312,35 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     if (!existingCols.includes(col)) {
       try {
         sqlite.exec(`ALTER TABLE projects ADD COLUMN ${col} ${type};`);
+      } catch (err) {
+        console.warn(`[db] could not add column ${col}:`, err);
+      }
+    }
+  }
+
+  /* Idempotent column adds for runs (older DBs). Adds Vercel live-deploy
+   * metadata columns introduced by the live-vercel-deploy feature. */
+  const runAdds: Array<[string, string]> = [
+    ["vercel_deployment_id", "TEXT"],
+    ["vercel_project_id", "TEXT"],
+    ["vercel_project_name", "TEXT"],
+    ["vercel_team_id", "TEXT"],
+    ["vercel_status", "TEXT"],
+    ["vercel_url", "TEXT"],
+    ["vercel_alias_url", "TEXT"],
+    ["vercel_inspector_url", "TEXT"],
+    ["vercel_error_message", "TEXT"],
+    ["vercel_events_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["vercel_last_polled_at", "INTEGER"],
+  ];
+  const existingRunCols = sqlite
+    .prepare("PRAGMA table_info(runs)")
+    .all()
+    .map((c: any) => c.name as string);
+  for (const [col, type] of runAdds) {
+    if (!existingRunCols.includes(col)) {
+      try {
+        sqlite.exec(`ALTER TABLE runs ADD COLUMN ${col} ${type};`);
       } catch (err) {
         console.warn(`[db] could not add column ${col}:`, err);
       }

@@ -26,9 +26,13 @@ export default function Overview() {
   const projects = useQuery<Project[]>({ queryKey: ["/api/projects"] });
   const runs = useQuery<Run[]>({ queryKey: ["/api/runs"] });
 
-  const succeeded = runs.data?.filter((r) => r.status === "succeeded").length ?? 0;
-  const running = runs.data?.filter((r) => r.status === "running").length ?? 0;
-  const failed = runs.data?.filter((r) => r.status === "failed").length ?? 0;
+  /* KPI counts treat dry-run validation and live success separately so the
+   * overview never implies a dry-run plan was a real deployment. */
+  const liveSucceeded = runs.data?.filter((r) => r.status === "live_succeeded").length ?? 0;
+  const dryRunValidated = runs.data?.filter((r) => r.status === "validated_dry_run" || r.status === "succeeded").length ?? 0;
+  const running = runs.data?.filter((r) => r.status === "running" || r.status === "live_running" || r.status === "live_pending").length ?? 0;
+  const failed = runs.data?.filter((r) => r.status === "failed" || r.status === "live_failed").length ?? 0;
+  const blocked = runs.data?.filter((r) => r.status === "live_blocked").length ?? 0;
 
   return (
     <PageShell
@@ -46,7 +50,7 @@ export default function Overview() {
       {/* KPI strip */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
         <Kpi icon={<Box className="h-4 w-4" />} label="Projects" value={projects.data?.length ?? 0} loading={projects.isLoading} />
-        <Kpi icon={<Activity className="h-4 w-4" />} label="Runs · 7d" value={runs.data?.length ?? 0} loading={runs.isLoading} sub={`${succeeded} ok · ${running} running · ${failed} failed`} />
+        <Kpi icon={<Activity className="h-4 w-4" />} label="Runs · 7d" value={runs.data?.length ?? 0} loading={runs.isLoading} sub={`${liveSucceeded} live · ${dryRunValidated} dry-run · ${running} running · ${failed} failed${blocked ? ` · ${blocked} blocked` : ""}`} />
         <Kpi icon={<ServerCog className="h-4 w-4" />} label="Providers connected"
           value={`${providers.data?.filter((p) => p.status === "connected").length ?? 0}/${providers.data?.length ?? 0}`}
           loading={providers.isLoading} />

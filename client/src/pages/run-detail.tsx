@@ -9,7 +9,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import { ProviderIcon, providerLabel } from "@/components/provider-icon";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Play, FastForward, ArrowLeft, Terminal } from "lucide-react";
+import { Play, FastForward, ArrowLeft, Terminal, Rocket, ExternalLink, AlertTriangle, ShieldAlert } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import type { Stage } from "@shared/schema";
 
@@ -17,11 +18,28 @@ export default function RunDetail() {
   const [, params] = useRoute("/runs/:id");
   const id = params?.id ? Number(params.id) : null;
   const [autoAdvance, setAutoAdvance] = useState(false);
+  const { toast } = useToast();
 
   const { data, isLoading } = useQuery<{ run: any; stages: Stage[] }>({
     queryKey: ["/api/runs", id],
     enabled: id != null,
     refetchInterval: autoAdvance ? 800 : false,
+  });
+
+  const isLive = data?.run?.mode === "live";
+  const liveStatus: string | undefined = data?.run?.status;
+  const liveTerminal = liveStatus === "live_succeeded" || liveStatus === "live_failed" || liveStatus === "live_blocked";
+  const livePolling = isLive && (liveStatus === "live_pending" || liveStatus === "live_running");
+
+  /* Live status poll — server-driven, never simulated. */
+  const liveStatusQ = useQuery<any>({
+    queryKey: ["/api/runs", id, "live-status"],
+    enabled: !!isLive && id != null,
+    refetchInterval: livePolling ? 3000 : false,
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/runs/${id}/live-status`);
+      return res.json();
+    },
   });
 
   const advance = useMutation({
@@ -35,9 +53,47 @@ export default function RunDetail() {
     },
   });
 
-  /* Auto-advance loop */
+  /**
+   * Trigger a real Vercel deployment. Requires the explicit confirmation
+   * phrase — sent as { confirm: "I UNDERSTAND" } — so an accidental click
+   * cannot fire a real deploy.
+   */
+  const startLive = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/runs/${id}/start-live`, {
+        confirm: "I UNDERSTAND",
+      });
+      const json = await res.json();
+      if (!json.ok && json.status !== "live_running") throw new Error(json.message ?? "live start failed");
+      return json;
+    },
+    onSuccess: (resp) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/runs", id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/runs", id, "live-status"] });
+      toast({
+        title: resp.ok ? "Live deployment started" : "Live deployment blocked",
+        description: resp.ok
+          ? `Vercel deployment ${resp.deploymentId} created. Polling for completion.`
+          : resp.blockers?.map((b: any) => b.message).join("; ") ?? resp.message,
+        variant: resp.ok ? undefined : "destructive",
+      });
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Could not start live deployment",
+        description: String(err?.message ?? err),
+        variant: "destructive",
+      });
+    },
+  });
+
+  /* Auto-advance loop — dry-run only. Live runs poll via liveStatusQ. */
   useEffect(() => {
     if (!autoAdvance || !data) return;
+    if (data.run?.mode === "live") {
+      setAutoAdvance(false);
+      return;
+    }
     const pending = data.stages.find((s) => s.status === "pending" || s.status === "running");
     if (!pending) {
       setAutoAdvance(false);
@@ -78,25 +134,56 @@ export default function RunDetail() {
               <ArrowLeft className="h-3.5 w-3.5" /> Back
             </Button>
           </Link>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => advance.mutate()}
-            disabled={allDone || advance.isPending}
-            className="gap-1"
-            data-testid="button-advance"
-          >
-            <Play className="h-3.5 w-3.5" /> Advance one stage
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => setAutoAdvance((x) => !x)}
-            disabled={allDone}
-            className="gap-1"
-            data-testid="button-auto-advance"
-          >
-            <FastForward className="h-3.5 w-3.5" /> {autoAdvance ? "Pause" : "Auto-advance"}
-          </Button>
+          {isLive ? (
+            <>
+              <Button
+                size="sm"
+                onClick={() => {
+                  if (!confirm(
+                    "Confirm live deployment.\n\n" +
+                    "This will trigger a REAL Vercel deployment for the selected repo and branch. " +
+                    "It is not a simulation. Continue?",
+                  )) return;
+                  startLive.mutate();
+                }}
+                disabled={startLive.isPending || liveStatus === "live_running" || liveStatus === "live_succeeded"}
+                className="gap-1"
+                data-testid="button-start-live"
+              >
+                <Rocket className="h-3.5 w-3.5" />
+                {liveStatus === "live_succeeded" ? "Live deploy ready" : liveStatus === "live_running" ? "Live deploy running" : "Start live deployment"}
+              </Button>
+              {run.vercelUrl && liveStatus === "live_succeeded" && (
+                <a href={run.vercelUrl} target="_blank" rel="noopener noreferrer">
+                  <Button variant="outline" size="sm" className="gap-1" data-testid="button-open-live-app">
+                    <ExternalLink className="h-3.5 w-3.5" /> Open live app
+                  </Button>
+                </a>
+              )}
+            </>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => advance.mutate()}
+                disabled={allDone || advance.isPending}
+                className="gap-1"
+                data-testid="button-advance"
+              >
+                <Play className="h-3.5 w-3.5" /> Advance one stage
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => setAutoAdvance((x) => !x)}
+                disabled={allDone}
+                className="gap-1"
+                data-testid="button-auto-advance"
+              >
+                <FastForward className="h-3.5 w-3.5" /> {autoAdvance ? "Pause" : "Auto-advance"}
+              </Button>
+            </>
+          )}
         </div>
       }
     >
@@ -105,7 +192,14 @@ export default function RunDetail() {
         <CardContent className="py-4">
           <div className="flex flex-wrap items-center gap-4">
             <StatusPill status={run.status} />
-            <Badge variant="outline" className="font-mono text-[10px]">{run.mode}</Badge>
+            {/* Mode badge — prominent. Distinguishes dry-run plans from live deploys. */}
+            <Badge
+              variant={isLive ? "default" : "outline"}
+              className={cn("font-mono text-[10px]", isLive && "bg-primary text-primary-foreground")}
+              data-testid="badge-mode"
+            >
+              {isLive ? "LIVE DEPLOY" : "DRY-RUN PLAN"}
+            </Badge>
             <span className="text-xs text-muted-foreground font-mono">env / <span className="text-foreground uppercase">{run.environment}</span></span>
             <span className="text-xs text-muted-foreground">·</span>
             <div className="flex items-center gap-2">
@@ -117,10 +211,27 @@ export default function RunDetail() {
               ))}
             </div>
           </div>
+          {!isLive && (
+            <p className="mt-3 text-[11px] text-muted-foreground border-t border-border pt-3">
+              <strong>Dry-run plan only.</strong> No provider mutations are performed. Final state is{" "}
+              <code className="font-mono">validated_dry_run</code> when stages pass.
+              To actually deploy, create a new run with mode <code className="font-mono">live</code>.
+            </p>
+          )}
         </CardContent>
       </Card>
 
-      {/* Stages */}
+      {/* Live Vercel deployment panel — only for live runs. */}
+      {isLive && (
+        <LiveVercelPanel
+          run={run}
+          live={liveStatusQ.data}
+          loading={liveStatusQ.isLoading}
+        />
+      )}
+
+      {/* Stages — hidden for live runs since they go through Vercel directly. */}
+      {!isLive && (
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
         <div className="lg:col-span-2">
           <h2 className="text-sm font-semibold mb-3">Pipeline</h2>
@@ -200,6 +311,139 @@ export default function RunDetail() {
           </Card>
         </div>
       </div>
+      )}
     </PageShell>
+  );
+}
+
+/* ---------------- Live Vercel deployment panel --------------------- */
+
+function LiveVercelPanel({ run, live, loading }: { run: any; live: any; loading: boolean }) {
+  const status: string = live?.status ?? run.status;
+  const events: Array<{ type: string; text: string; createdAt: number | null }> =
+    (live?.events ?? run.vercelEvents ?? []) as any[];
+  const url: string | null = live?.vercelUrl ?? run.vercelUrl ?? null;
+  const aliasUrl: string | null = live?.vercelAliasUrl ?? run.vercelAliasUrl ?? null;
+  const inspectorUrl: string | null = live?.inspectorUrl ?? run.vercelInspectorUrl ?? null;
+  const errorMessage: string | null = live?.errorMessage ?? run.vercelErrorMessage ?? null;
+  const deploymentId: string | null = run.vercelDeploymentId ?? null;
+  const projectName: string | null = run.vercelProjectName ?? null;
+  const readyState: string | null = live?.vercelStatus ?? run.vercelStatus ?? null;
+
+  const blocked = status === "live_blocked";
+  const failed = status === "live_failed";
+  const succeeded = status === "live_succeeded";
+  const running = status === "live_running" || status === "live_pending";
+
+  return (
+    <Card className="mb-6">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm flex items-center gap-2">
+          <Rocket className="h-4 w-4" />
+          Live Vercel deployment
+          <StatusPill status={status as any} className="ml-2" />
+          {readyState && (
+            <Badge variant="outline" className="ml-1 text-[10px] font-mono">
+              vercel: {readyState}
+            </Badge>
+          )}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {loading && !live && (
+          <p className="text-xs text-muted-foreground">Loading live status…</p>
+        )}
+
+        {/* Blocker view */}
+        {blocked && (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 mb-3">
+            <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 text-xs font-semibold mb-2">
+              <ShieldAlert className="h-3.5 w-3.5" /> Live deployment blocked — clear the requirements below and retry.
+            </div>
+            <ul className="space-y-1.5 text-xs">
+              {events.filter((e) => e.type === "blocker").map((e, i) => (
+                <li key={i} className="rounded border border-border bg-card px-2 py-1.5 font-mono text-[11px]" data-testid={`blocker-row-${i}`}>
+                  {e.text}
+                </li>
+              ))}
+              {errorMessage && (
+                <li className="rounded border border-border bg-card px-2 py-1.5 font-mono text-[11px] whitespace-pre-wrap">
+                  {errorMessage}
+                </li>
+              )}
+            </ul>
+          </div>
+        )}
+
+        {/* Deployment metadata grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs font-mono mb-3">
+          <KVRow label="Vercel project" value={projectName ?? "—"} testid="kv-vercel-project" />
+          <KVRow label="Deployment ID" value={deploymentId ?? "—"} testid="kv-vercel-deployment-id" />
+          <KVRow label="Ready state" value={readyState ?? "—"} testid="kv-vercel-ready-state" />
+          <KVRow label="Polled at" value={live?.lastPolledAt ? new Date(live.lastPolledAt).toLocaleTimeString() : run.vercelLastPolledAt ? new Date(run.vercelLastPolledAt).toLocaleTimeString() : "—"} testid="kv-vercel-polled-at" />
+          <KVRow
+            label="Public URL"
+            value={url ?? "—"}
+            href={succeeded && url ? url : null}
+            testid="kv-vercel-url"
+          />
+          <KVRow
+            label="Inspector"
+            value={inspectorUrl ?? "—"}
+            href={inspectorUrl ?? null}
+            testid="kv-vercel-inspector"
+          />
+        </div>
+
+        {/* Open live app button — only when there's an actual ready URL. */}
+        {succeeded && url && (
+          <a href={url} target="_blank" rel="noopener noreferrer" className="inline-block mb-3">
+            <Button variant="default" size="sm" className="gap-1" data-testid="button-open-deployment">
+              <ExternalLink className="h-3.5 w-3.5" /> Open live app
+            </Button>
+          </a>
+        )}
+
+        {failed && errorMessage && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 mb-3 text-xs">
+            <div className="flex items-center gap-2 text-destructive font-semibold mb-1">
+              <AlertTriangle className="h-3.5 w-3.5" /> Deployment failed
+            </div>
+            <div className="font-mono whitespace-pre-wrap text-[11px]">{errorMessage}</div>
+          </div>
+        )}
+
+        {/* Real Vercel events log */}
+        <div className="rounded-md border border-border bg-[#0c1220] dark:bg-[#06090f] text-[#cdd6e0]">
+          <div className="border-b border-white/10 px-3 py-2 text-[11px] font-mono text-white/50 flex items-center justify-between">
+            <span>vercel events · {events.length}</span>
+            <span>{running ? "polling…" : status}</span>
+          </div>
+          <pre className="p-3 text-[12px] leading-relaxed font-mono overflow-x-auto max-h-[40vh] overflow-y-auto">
+{events.length === 0
+  ? "No events yet. Events arrive once Vercel returns deployment activity. None are synthesized."
+  : events.map((e) => {
+      const ts = e.createdAt ? new Date(e.createdAt).toISOString().slice(11, 19) : "         ";
+      return `${ts} [${e.type}] ${e.text}`;
+    }).join("\n")}
+          </pre>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function KVRow({ label, value, href, testid }: { label: string; value: string; href?: string | null; testid?: string }) {
+  return (
+    <div className="flex items-center justify-between rounded-md border border-border px-3 py-1.5 bg-card/40" data-testid={testid}>
+      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</span>
+      {href ? (
+        <a href={href} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline truncate max-w-[60%]">
+          {value}
+        </a>
+      ) : (
+        <span className="text-xs truncate max-w-[60%]" title={value}>{value}</span>
+      )}
+    </div>
   );
 }

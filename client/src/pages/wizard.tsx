@@ -12,7 +12,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
   Sparkles, Check, ChevronRight, ChevronLeft, Eye, EyeOff,
-  FlaskConical,
+  FlaskConical, AlertTriangle, ExternalLink, ShieldAlert,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -134,6 +134,24 @@ export default function Wizard() {
     },
   });
 
+  /**
+   * Live readiness preflight. Runs only when the user opts into live mode +
+   * has a real GitHub repo selected. Hits the read-only readiness endpoint
+   * so we can render the blocker list before the user clicks Run live.
+   */
+  const livePreflight = useQuery<any>({
+    queryKey: ["/api/live/vercel/preflight", selectedRepo?.fullName, selectedBranch],
+    enabled: !!liveMode && !!selectedRepo && !!selectedBranch && providers.includes("vercel"),
+    queryFn: async () => {
+      const res = await apiRequest(
+        "GET",
+        `/api/live/vercel/preflight?repo=${encodeURIComponent(selectedRepo!.fullName)}&branch=${encodeURIComponent(selectedBranch!)}&name=${encodeURIComponent(selectedRepo!.name)}`,
+      );
+      return res.json();
+    },
+    refetchInterval: false,
+  });
+
   /* Project name derives from repo name. */
   const projectName = selectedRepo?.name ?? "—";
 
@@ -176,14 +194,21 @@ export default function Wizard() {
         providers,
         envVars,
       });
-      return res.json();
+      const runResp = await res.json();
+      /* Live runs require an explicit start-live POST to actually contact
+       * Vercel. The wizard does NOT trigger that automatically — the user
+       * confirms on the run detail page. This keeps the wizard's Run
+       * button safely non-mutating from the provider's POV. */
+      return runResp;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/runs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
       toast({
-        title: "Run created",
-        description: `Pipeline queued in ${liveMode ? "LIVE" : "dry-run"} mode. Advance the stages on the run page.`,
+        title: liveMode ? "Live run created — confirm on the run page" : "Dry-run plan created",
+        description: liveMode
+          ? "Run is queued in LIVE mode. Open the run page and click 'Start live deployment' to actually contact Vercel."
+          : "Pipeline queued in dry-run mode. Advance stages to see the plan.",
       });
       navigate(`/runs/${data.id}`);
     },
@@ -218,7 +243,7 @@ export default function Wizard() {
             data-testid="switch-live-mode"
           />
           <span className={cn("text-xs font-mono", liveMode ? "text-primary" : "text-muted-foreground")}>
-            {liveMode ? "LIVE" : "DRY-RUN"}
+            {liveMode ? "LIVE DEPLOY" : "DRY-RUN PLAN"}
           </span>
         </div>
       }
@@ -296,6 +321,9 @@ export default function Wizard() {
               revealValues={revealValues}
               setRevealValues={setRevealValues}
               liveMode={liveMode}
+              setLiveMode={setLiveMode}
+              livePreflight={livePreflight.data ?? null}
+              livePreflightLoading={livePreflight.isLoading}
             />
           )}
         </CardContent>
@@ -323,7 +351,11 @@ export default function Wizard() {
             className="gap-2"
             data-testid="button-run"
           >
-            {createRun.isPending ? "Queueing…" : (liveMode ? <>Run live <Sparkles className="h-4 w-4" /></> : <>Run dry-run <FlaskConical className="h-4 w-4" /></>)}
+            {createRun.isPending
+              ? "Queueing…"
+              : liveMode
+                ? <>Queue live run <Sparkles className="h-4 w-4" /></>
+                : <>Run dry-run plan <FlaskConical className="h-4 w-4" /></>}
           </Button>
         )}
       </div>
@@ -494,13 +526,122 @@ function StepProviders({
 
 function StepReview({
   projectName, repoFullName, branch, extras, environment, blueprint, providers,
-  envPreview, ci, revealValues, setRevealValues, liveMode,
+  envPreview, ci, revealValues, setRevealValues, liveMode, setLiveMode,
+  livePreflight, livePreflightLoading,
 }: any) {
+  const blockers: Array<{ code: string; message: string; remediation: string }> =
+    Array.isArray(livePreflight?.blockers) ? livePreflight.blockers : [];
+  const liveReady = !!livePreflight?.ready;
+  const matched = livePreflight?.matchedProject ?? null;
   return (
     <div className="space-y-6">
       <CardHeader className="px-0 pt-0">
         <CardTitle className="text-sm">Step 5 — review automation plan</CardTitle>
       </CardHeader>
+
+      {/* Mode selector — prominent and unambiguous. Dry-run is the default. */}
+      <div className="rounded-lg border border-border bg-card/40 p-4">
+        <div className="flex items-start gap-4">
+          <button
+            onClick={() => setLiveMode?.(false)}
+            className={cn(
+              "flex-1 rounded-lg border p-4 text-left transition-colors",
+              !liveMode ? "border-primary bg-primary/5" : "border-border hover-elevate",
+            )}
+            data-testid="option-mode-dry-run"
+          >
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-2">
+                <FlaskConical className="h-4 w-4" />
+                <span className="text-sm font-semibold">Dry-run plan</span>
+              </div>
+              {!liveMode && <Check className="h-4 w-4 text-primary" />}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Validates the plan against your repo. <strong>No provider mutations, no Vercel deployment.</strong>
+              Final state is <code className="font-mono">validated_dry_run</code> — never <code className="font-mono">succeeded</code>.
+            </p>
+          </button>
+          <button
+            onClick={() => setLiveMode?.(true)}
+            className={cn(
+              "flex-1 rounded-lg border p-4 text-left transition-colors",
+              liveMode ? "border-primary bg-primary/5" : "border-border hover-elevate",
+            )}
+            data-testid="option-mode-live"
+          >
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4" />
+                <span className="text-sm font-semibold">Live deploy</span>
+              </div>
+              {liveMode && <Check className="h-4 w-4 text-primary" />}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Triggers a real Vercel deployment for <code className="font-mono">{repoFullName}@{branch}</code>.
+              Run reaches <code className="font-mono">live_succeeded</code> only when Vercel reports ready with a public URL.
+            </p>
+          </button>
+        </div>
+
+        {/* Live readiness panel — only when live is selected. */}
+        {liveMode && (
+          <div className="mt-4 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+            <div className="flex items-start gap-2">
+              <ShieldAlert className="h-4 w-4 text-amber-500 mt-0.5" />
+              <div className="flex-1">
+                <div className="text-xs font-semibold text-amber-700 dark:text-amber-400">
+                  Live deployment readiness
+                </div>
+                {livePreflightLoading && (
+                  <p className="text-xs text-muted-foreground mt-1">Checking gates…</p>
+                )}
+                {!livePreflightLoading && livePreflight && (
+                  <div className="mt-1 space-y-2">
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <Badge variant={liveReady ? "default" : "outline"} className="text-[10px]">
+                        {liveReady ? "READY" : `${blockers.length} blocker${blockers.length === 1 ? "" : "s"}`}
+                      </Badge>
+                      {livePreflight.tokenSource && (
+                        <span className="font-mono text-muted-foreground">
+                          token: {livePreflight.tokenSource}
+                        </span>
+                      )}
+                      {livePreflight.account?.username && (
+                        <span className="font-mono text-muted-foreground">
+                          vercel as: {livePreflight.account.username}
+                        </span>
+                      )}
+                      {matched && (
+                        <span className="font-mono text-muted-foreground">
+                          project: {matched.name}
+                        </span>
+                      )}
+                    </div>
+                    {!liveReady && (
+                      <ul className="space-y-1.5 text-xs">
+                        {blockers.map((b) => (
+                          <li key={b.code} className="rounded border border-border bg-card px-2 py-1.5" data-testid={`blocker-${b.code}`}>
+                            <div className="flex items-center gap-2">
+                              <AlertTriangle className="h-3 w-3 text-amber-500" />
+                              <span className="font-mono text-[10px] text-amber-700 dark:text-amber-400">{b.code}</span>
+                            </div>
+                            <div className="text-foreground/80 mt-0.5">{b.message}</div>
+                            <div className="text-muted-foreground text-[11px] mt-0.5">→ {b.remediation}</div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                {!liveMode && (
+                  <p className="text-xs text-muted-foreground mt-1">Toggle live deploy to see readiness gates.</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="space-y-2 lg:col-span-1">
@@ -580,7 +721,9 @@ function StepReview({
               <Check_ ok={providers.includes("neon")} label="Neon Postgres · branch per environment" />
               <Check_ ok={providers.includes("prisma")} label="Prisma management API · regions resolved" />
               <Check_ ok={!providers.includes("railway")} optional label="Railway · manual CLI fallback only" />
-              <Check_ ok={!liveMode} label="Mode is DRY-RUN — no provider mutations will occur." />
+              {liveMode
+                ? <Check_ ok={liveReady} label={liveReady ? "Live deploy ready — Vercel call will fire on confirmation." : "Live deploy blocked — clear the readiness blockers above."} />
+                : <Check_ ok label="Mode is DRY-RUN — no provider mutations will occur." />}
             </TabsContent>
           </Tabs>
         </div>

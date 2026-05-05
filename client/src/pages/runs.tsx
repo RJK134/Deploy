@@ -70,7 +70,15 @@ export default function Runs() {
                         <td className="px-4 py-3"><div className="font-medium">{proj?.name ?? "—"}</div></td>
                         <td className="px-4 py-3 text-xs font-mono uppercase">{r.environment}</td>
                         <td className="px-4 py-3"><StatusPill status={r.status} /></td>
-                        <td className="px-4 py-3"><Badge variant="outline" className="font-mono text-[10px]">{r.mode}</Badge></td>
+                        <td className="px-4 py-3">
+                          <Badge
+                            variant={r.mode === "live" ? "default" : "outline"}
+                            className="font-mono text-[10px]"
+                            data-testid={`mode-${r.id}`}
+                          >
+                            {r.mode === "live" ? "LIVE DEPLOY" : "DRY-RUN PLAN"}
+                          </Badge>
+                        </td>
                         <td className="px-4 py-3 text-xs font-mono text-muted-foreground">{(r.providers ?? []).join(" · ")}</td>
                         <td className="px-4 py-3 text-xs text-muted-foreground tabular-nums">{fmtAgo(r.createdAt)}</td>
                         <td className="px-4 py-3 text-right">

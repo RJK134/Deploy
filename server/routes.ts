@@ -22,6 +22,9 @@ import {
   type GhRepoSummary,
 } from "./github";
 import { registerConnectionRoutes, resolveActiveToken } from "./connections-routes";
+import {
+  startLiveVercelDeploy, pollLiveVercelDeploy, checkLiveVercelReadiness,
+} from "./live-deploy";
 
 /* Helper: parse JSON columns safely */
 function parseJSON<T>(raw: string | null | undefined, fallback: T): T {
@@ -391,6 +394,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ...r,
       providers: parseJSON<string[]>(r.providers, []),
       envVars: parseJSON<Array<{ key: string; value: string; source: string }>>(r.envVars, []),
+      /* Surface live-vs-dry-run flag for list views so the UI never
+       * presents a dry-run with the same language as a real deployment. */
+      isLive: r.mode === "live",
+      isTerminal: ["live_succeeded", "live_failed", "live_blocked", "validated_dry_run", "succeeded", "failed"].includes(r.status),
     })));
   });
 
@@ -404,6 +411,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ...run,
         providers: parseJSON<string[]>(run.providers, []),
         envVars: parseJSON<Array<{ key: string; value: string; source: string }>>(run.envVars, []),
+        vercelEvents: parseJSON<Array<{ type: string; text: string; createdAt: number | null }>>(run.vercelEvents, []),
       },
       stages,
     });
@@ -441,7 +449,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         log: "",
       } as InsertStage);
     }
-    await storage.updateRun(run.id, { status: "running", startedAt: Date.now() });
+    /* Dry-run runs start advancing through the stage plan.
+     * Live runs stay `queued` and do nothing until POST /api/runs/:id/start-live.
+     * This keeps a live run's terminal state honest — `succeeded` is never
+     * written by the dry-run advancer for a live run. */
+    if (parsed.data.mode === "live") {
+      await storage.updateRun(run.id, { status: "queued" });
+    } else {
+      await storage.updateRun(run.id, { status: "running", startedAt: Date.now() });
+    }
     res.json({ id: run.id });
   });
 
@@ -455,6 +471,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const id = Number(req.params.id);
     const run = await storage.getRun(id);
     if (!run) return res.status(404).json({ error: "run not found" });
+    /* Live runs are NOT advanced through the dry-run stage plan. They go
+     * through /start-live which calls the real Vercel API. Refusing here
+     * prevents a live run from accidentally being marked succeeded by the
+     * synthetic advancer. */
+    if (run.mode === "live") {
+      return res.status(409).json({
+        error: "live runs cannot be advanced as dry-run stages",
+        code: "live-run",
+        detail: "Use POST /api/runs/:id/start-live to trigger the real Vercel deployment, then poll /api/runs/:id/live-status.",
+      });
+    }
     const project = await storage.getProject(run.projectId);
     if (!project) return res.status(404).json({ error: "project not found" });
     const stages = await storage.listStages(id);
@@ -508,17 +535,158 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       log: result.log.join("\n"),
     });
 
-    /* If this was the last stage, mark run completed. */
+    /* If this was the last stage, mark run completed. Dry-runs write
+     * `validated_dry_run` so the UI never confuses a plan with a real
+     * deployment. The `succeeded` state is reserved for legacy seed data
+     * and live runs that successfully resolve via Vercel. */
     const remaining = (await storage.listStages(id)).filter((s) => s.status === "pending");
     if (remaining.length === 0) {
       await storage.updateRun(id, {
-        status: result.ok ? "succeeded" : "failed",
+        status: result.ok ? "validated_dry_run" : "failed",
         finishedAt: Date.now(),
       });
     }
 
     const allStages = await storage.listStages(id);
     res.json({ stage: allStages.find((s) => s.id === next.id), stages: allStages });
+  });
+
+  /* ------------------------- live vercel deploy ------------------------- */
+  /**
+   * Start a real Vercel deployment for a live-mode run. Refuses if the run
+   * is not live, returns a structured blocker list when readiness checks
+   * fail. Never simulates success.
+   *
+   * Hard safety: requires the request to opt in with body { confirm: "I UNDERSTAND" }
+   * unless DEPLOYOPS_CONFIRM_LIVE_DEPLOY=0. This protects against an
+   * accidental click in the UI from triggering a real deployment during
+   * implementation/testing.
+   */
+  app.post("/api/runs/:id/start-live", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: "bad run id", code: "bad-request" });
+
+    const confirm = typeof req.body?.confirm === "string" ? req.body.confirm.trim() : "";
+    const confirmRequired = process.env.DEPLOYOPS_CONFIRM_LIVE_DEPLOY !== "0";
+    if (confirmRequired && confirm.toUpperCase() !== "I UNDERSTAND") {
+      return res.status(400).json({
+        error: "live deploy confirmation phrase required",
+        code: "confirmation-required",
+        detail: 'Send body { confirm: "I UNDERSTAND" } to start a real Vercel deployment. ' +
+                'This is a real external action and is not free.',
+      });
+    }
+
+    try {
+      const result = await startLiveVercelDeploy(id);
+      const status = result.ok ? 200 : (result.status === "live_blocked" ? 409 : 502);
+      return res.status(status).json(result);
+    } catch (err: any) {
+      return res.status(500).json({
+        ok: false,
+        status: "live_failed",
+        message: String(err?.message ?? err),
+      });
+    }
+  });
+
+  /**
+   * Poll the upstream Vercel deployment for a run. Idempotent. Returns
+   * the latest persisted live status + any new events.
+   */
+  app.get("/api/runs/:id/live-status", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: "bad run id", code: "bad-request" });
+    try {
+      const result = await pollLiveVercelDeploy(id);
+      return res.json({ ok: true, ...result });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+    }
+  });
+
+  /**
+   * Return the persisted vercel events for a run (no fresh poll). Used by
+   * the run detail UI to render the events log without forcing an upstream
+   * call on every tab switch.
+   */
+  app.get("/api/runs/:id/vercel-events", async (req, res) => {
+    const id = Number(req.params.id);
+    const run = await storage.getRun(id);
+    if (!run) return res.status(404).json({ error: "run not found" });
+    res.json({
+      ok: true,
+      runId: id,
+      mode: run.mode,
+      status: run.status,
+      vercel: {
+        deploymentId: run.vercelDeploymentId,
+        projectId: run.vercelProjectId,
+        projectName: run.vercelProjectName,
+        teamId: run.vercelTeamId,
+        readyState: run.vercelStatus,
+        url: run.vercelUrl,
+        aliasUrl: run.vercelAliasUrl,
+        inspectorUrl: run.vercelInspectorUrl,
+        errorMessage: run.vercelErrorMessage,
+        lastPolledAt: run.vercelLastPolledAt,
+      },
+      events: parseJSON<any[]>(run.vercelEvents, []),
+    });
+  });
+
+  /**
+   * Read-only readiness check for a live Vercel deploy of a project+branch.
+   * Returns blockers without contacting Vercel beyond a token validation.
+   * Used by the wizard to render the live deployment gate before the user
+   * commits.
+   */
+  app.get("/api/live/vercel/readiness", async (req, res) => {
+    const projectId = Number(req.query.projectId);
+    const branch = String(req.query.branch ?? "").trim();
+    if (!Number.isFinite(projectId)) {
+      return res.status(400).json({ error: "projectId is required", code: "bad-request" });
+    }
+    const project = await storage.getProject(projectId);
+    if (!project) return res.status(404).json({ error: "project not found", code: "not-found" });
+    try {
+      const readiness = await checkLiveVercelReadiness({
+        project,
+        branch: branch || project.sourceBranch || project.sourceDefaultBranch || "main",
+      });
+      return res.json({ ok: true, ...readiness });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+    }
+  });
+
+  /**
+   * Pre-flight live readiness for a repo + branch BEFORE a project row
+   * exists (i.e. from inside the wizard). Synthesises a project-shaped
+   * input without persisting anything.
+   */
+  app.get("/api/live/vercel/preflight", async (req, res) => {
+    const repo = String(req.query.repo ?? "").trim();
+    const branch = String(req.query.branch ?? "").trim() || "main";
+    const name = String(req.query.name ?? "").trim() || (repo.split("/")[1] ?? "deploy");
+    if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+      return res.status(400).json({ error: "repo must be owner/name", code: "bad-request" });
+    }
+    /* Build a stand-in project shape — never touched by storage. */
+    const stub = {
+      id: 0, name, repo, framework: "unknown", buildCommand: "", outputDir: "",
+      rootDir: ".", needsDatabase: false, ormDetected: null,
+      envExample: "[]", blueprintId: null, accessMode: "private",
+      sourceProvider: "github", sourceBranch: branch, sourceUrl: null,
+      sourceDefaultBranch: branch, sourceVisibility: null, sourceLanguage: null,
+      sourceUpdatedAt: null, detectedConfig: "{}", createdAt: 0,
+    } as any;
+    try {
+      const readiness = await checkLiveVercelReadiness({ project: stub, branch });
+      return res.json({ ok: true, ...readiness });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+    }
   });
 
   /* ------------------------------- helpers ------------------------------- */

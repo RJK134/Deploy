@@ -6,7 +6,11 @@
 - **Build output**: `dist/public` (static) + `dist/index.cjs` (Express backend, serves API on port 5000)
 
 ## What it is
-A demo-grade DeployOps Console for orchestrating GitHub deployments to Test → Demo → Deploy environments using GitHub, Vercel, Neon, Prisma, and (manual) Railway. Every provider call is currently a **dry-run simulation** — the UI is fully wired to the live adapter pattern and ships a per-provider mode toggle that flips to real CLI invocations once `DEPLOYOPS_LIVE=1` is set and individual providers are switched out of dry-run.
+A DeployOps Console for orchestrating GitHub deployments to Test → Demo → Deploy environments using GitHub, Vercel, Neon, Prisma, and (manual) Railway.
+
+**Vercel deploys are now real**, not simulated. When the user picks a real GitHub repo + branch, switches the wizard into Live deploy mode, clears the readiness gates (Vercel token resolved, Vercel-GitHub integration installed, `DEPLOYOPS_LIVE=1`), and clicks **Start live deployment** on the run page, DeployOps calls Vercel's REST `POST /v13/deployments` and polls the real status until the upstream deployment is `READY` (success), `ERROR`, or `CANCELED`. No simulated success states are presented as real deployments.
+
+Other providers (Neon, Prisma, Railway) remain dry-run plans only in this branch. They are clearly labelled `validated_dry_run` in the run table — never `succeeded`.
 
 ## Pages (hash routing)
 | Route | File | Purpose |
@@ -38,7 +42,12 @@ A demo-grade DeployOps Console for orchestrating GitHub deployments to Test → 
 ## Key API endpoints
 - `GET/POST/PATCH /api/projects[/:id]`
 - `GET/POST /api/runs[/:id]?projectId=`
-- `POST /api/runs/:id/advance` — advances next pending stage through the adapter
+- `POST /api/runs/:id/advance` — advances next pending stage through the adapter (dry-run runs only; refused for live runs)
+- `POST /api/runs/:id/start-live` — triggers a real Vercel deployment (live-mode runs only). Body must include `{ confirm: "I UNDERSTAND" }` unless `DEPLOYOPS_CONFIRM_LIVE_DEPLOY=0`.
+- `GET /api/runs/:id/live-status` — polls Vercel for live deployment state; persists changes; returns events + url + ready state
+- `GET /api/runs/:id/vercel-events` — read-only Vercel events + metadata (no fresh poll)
+- `GET /api/live/vercel/readiness?projectId=…&branch=…` — readiness gates for an existing project
+- `GET /api/live/vercel/preflight?repo=owner/name&branch=…` — readiness gates inside the wizard, before a project row exists
 - `GET/POST /api/blueprints`
 - `GET /api/providers`, `POST /api/providers/:key/mode` — toggle dry-run ↔ live
 - `GET /api/connections`, `GET /api/connections/:provider` — Connection Center state (no secrets)
@@ -52,6 +61,47 @@ A demo-grade DeployOps Console for orchestrating GitHub deployments to Test → 
 See [`docs/CONNECTIONS.md`](docs/CONNECTIONS.md) for the full connection/auth model.
 - `POST /api/preview/ci` — returns proposed `.github/workflows/deployops.yml`
 - `POST /api/preview/env` — returns env-var resolution plan with sources
+
+## Live Vercel deploy flow
+
+```
+[wizard] pick repo+branch → review step → toggle Live deploy
+   ↓
+[GET /api/live/vercel/preflight] readiness gates rendered
+   ↓
+[POST /api/runs] create run with mode=live (status=queued, no external action)
+   ↓
+[run page] user clicks Start live deployment → confirm dialog
+   ↓
+[POST /api/runs/:id/start-live { confirm: "I UNDERSTAND" }]
+   → server/live-deploy.ts checkLiveVercelReadiness (refuses if blocked)
+   → server/vercel.ts vercelCreateDeploymentFromGitHub (REAL Vercel API call)
+   → run.vercelDeploymentId persisted, status=live_running
+   ↓
+[GET /api/runs/:id/live-status] polled every 3s while running
+   → server/live-deploy.ts pollLiveVercelDeploy
+   → server/vercel.ts vercelGetDeployment (real)
+   → on terminal: vercelGetDeploymentEvents (real)
+   ↓
+[run page] when status==live_succeeded → "Open live app" button → real public URL
+```
+
+### Run statuses (introduced this branch)
+
+| Status               | Mode    | Meaning                                                         |
+| -------------------- | ------- | --------------------------------------------------------------- |
+| `queued`             | both    | Created, no external action yet                                 |
+| `running`            | dry-run | Stage advancer is iterating the dry-run plan                    |
+| `validated_dry_run`  | dry-run | Plan validated end-to-end. **Not** a real deployment.           |
+| `failed`             | dry-run | A planning stage failed                                         |
+| `live_pending`       | live    | Live deploy started; Vercel call in flight                      |
+| `live_running`       | live    | Vercel reports deployment building                              |
+| `live_succeeded`     | live    | Vercel returned `READY` with a public URL                       |
+| `live_failed`        | live    | Vercel returned `ERROR` or `CANCELED`. Real upstream message.   |
+| `live_blocked`       | live    | Readiness gate failed before any external action — no API call. |
+
+### Run schema additions
+`runs` table now persists Vercel-specific metadata: `vercel_deployment_id`, `vercel_project_id`, `vercel_project_name`, `vercel_team_id`, `vercel_status` (raw upstream), `vercel_url` (public), `vercel_alias_url`, `vercel_inspector_url`, `vercel_error_message`, `vercel_events_json` (real events from Vercel; never synthesized), `vercel_last_polled_at`. Both SQLite and Postgres mirrors have the new columns; SQLite migration uses idempotent `ALTER TABLE ADD COLUMN` so existing DBs upgrade without manual intervention.
 
 ## Design system
 - **Concept**: developer console aesthetic. Cool slate surfaces, a single electric-mint accent reserved for "ship/deploy" actions. Default DARK mode; light mode uses near-white surfaces with the dark sidebar preserved (Vercel/Linear pattern) for navigation continuity.
