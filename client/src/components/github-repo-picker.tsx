@@ -277,10 +277,11 @@ export function GithubRepoPicker({
 
   const reposError = reposQ.error as (Error & { code?: string; status?: number }) | null;
 
-  /** When live load returned a cache fallback, treat as needing connect if no auth at all. */
-  const cacheFromAuthMissing = reposQ.data?.source === "cache" && reposQ.data?.liveError?.code === "auth-missing";
+  /** When live load returned a cache fallback, treat auth/scopes failures as needing connect. */
+  const cacheNeedsConnect = reposQ.data?.source === "cache"
+    && (reposQ.data?.liveError?.code === "auth-missing" || reposQ.data?.liveError?.code === "forbidden-scope");
   const needsConnect = !!reposError && (reposError.code === "auth-missing" || reposError.code === "forbidden-scope")
-    || cacheFromAuthMissing
+    || cacheNeedsConnect
     || (diagQ.data && diagQ.data.authSource === null && (reposQ.data?.repos.length ?? 0) === 0);
 
   const onConnected = async () => {
