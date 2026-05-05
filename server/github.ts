@@ -134,7 +134,9 @@ function activeAuth(): { token: string | null; source: AuthSource } {
   const ctx = ghCtx.getStore();
   if (ctx?.token) return { token: ctx.token, source: ctx.source === "none" ? "connection" : ctx.source };
   /* Env vars (GITHUB_TOKEN preferred, GH_TOKEN as fallback for parity with gh CLI). */
-  const envTok = ((process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN) ?? "").trim();
+  const githubToken = process.env.GITHUB_TOKEN?.trim() || null;
+  const ghToken = process.env.GH_TOKEN?.trim() || null;
+  const envTok = githubToken ?? ghToken;
   if (envTok) return { token: envTok, source: "env" };
   return { token: null, source: "cli" };
 }
