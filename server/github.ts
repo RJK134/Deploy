@@ -180,37 +180,191 @@ export async function ghViewer(): Promise<{ login: string; name: string | null; 
   return { login: data.login, name: data.name ?? null, avatarUrl: data.avatar_url ?? null };
 }
 
-/** List the authenticated user's repositories (first up to ~200, sorted by recent push). */
-export async function ghListRepos(): Promise<GhRepoSummary[]> {
-  /* Two pages of 100 covers most users; cap the call cost. */
+function mapRepo(r: any): GhRepoSummary {
+  return {
+    id: r.id,
+    name: r.name,
+    fullName: r.full_name,
+    owner: r.owner?.login ?? r.full_name?.split("/")[0] ?? "",
+    description: r.description ?? null,
+    url: r.html_url,
+    cloneUrl: r.clone_url,
+    defaultBranch: r.default_branch ?? "main",
+    private: !!r.private,
+    fork: !!r.fork,
+    archived: !!r.archived,
+    language: r.language ?? null,
+    pushedAt: r.pushed_at ?? null,
+    updatedAt: r.updated_at ?? null,
+    topics: Array.isArray(r.topics) ? r.topics : [],
+  };
+}
+
+/** Repos owned + accessible by the authenticated user via /user/repos. */
+async function ghListAuthenticatedUserRepos(): Promise<GhRepoSummary[]> {
   const out: GhRepoSummary[] = [];
   for (const page of [1, 2]) {
-    const batch = await ghApi<any[]>(
-      `/user/repos?per_page=100&page=${page}&sort=pushed&affiliation=owner,collaborator,organization_member`,
-    );
-    if (!Array.isArray(batch) || batch.length === 0) break;
-    for (const r of batch) {
-      out.push({
-        id: r.id,
-        name: r.name,
-        fullName: r.full_name,
-        owner: r.owner?.login ?? r.full_name?.split("/")[0] ?? "",
-        description: r.description,
-        url: r.html_url,
-        cloneUrl: r.clone_url,
-        defaultBranch: r.default_branch ?? "main",
-        private: !!r.private,
-        fork: !!r.fork,
-        archived: !!r.archived,
-        language: r.language,
-        pushedAt: r.pushed_at,
-        updatedAt: r.updated_at,
-        topics: Array.isArray(r.topics) ? r.topics : [],
-      });
+    let batch: any[] = [];
+    try {
+      batch = await ghApi<any[]>(
+        `/user/repos?per_page=100&page=${page}&sort=pushed&affiliation=owner,collaborator,organization_member`,
+      );
+    } catch (err) {
+      if (page === 1) throw err;
+      break;
     }
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    for (const r of batch) out.push(mapRepo(r));
     if (batch.length < 100) break;
   }
   return out;
+}
+
+/** Repos for a specific user via /users/{login}/repos (covers viewer's owned repos even if /user/repos is partial). */
+async function ghListUserRepos(login: string): Promise<GhRepoSummary[]> {
+  const out: GhRepoSummary[] = [];
+  for (const page of [1, 2]) {
+    const batch = await ghApi<any[]>(
+      `/users/${encodeURIComponent(login)}/repos?per_page=100&page=${page}&sort=pushed&type=owner`,
+    );
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    for (const r of batch) out.push(mapRepo(r));
+    if (batch.length < 100) break;
+  }
+  return out;
+}
+
+/** Repos for an org via /orgs/{org}/repos. */
+async function ghListOrgRepos(org: string): Promise<GhRepoSummary[]> {
+  const out: GhRepoSummary[] = [];
+  for (const page of [1, 2]) {
+    const batch = await ghApi<any[]>(
+      `/orgs/${encodeURIComponent(org)}/repos?per_page=100&page=${page}&sort=pushed`,
+    );
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    for (const r of batch) out.push(mapRepo(r));
+    if (batch.length < 100) break;
+  }
+  return out;
+}
+
+/**
+ * List repos for an arbitrary owner (user or org) — tries org first, falls back to user.
+ * Returns empty array on not-found; rethrows other errors.
+ */
+export async function ghListOwnerRepos(owner: string): Promise<GhRepoSummary[]> {
+  try {
+    return await ghListOrgRepos(owner);
+  } catch (err) {
+    if (!(err instanceof GhError) || err.code !== "not-found") throw err;
+  }
+  try {
+    return await ghListUserRepos(owner);
+  } catch (err) {
+    if (err instanceof GhError && err.code === "not-found") return [];
+    throw err;
+  }
+}
+
+export interface ListReposOptions {
+  /** Additional owners (user or org logins) to aggregate, beyond the authenticated viewer. */
+  extraOwners?: string[];
+}
+
+export interface ListReposResult {
+  repos: GhRepoSummary[];
+  /** Owners actually queried that returned at least one repo. */
+  owners: string[];
+  /** Owners that were attempted but failed (e.g. not accessible). */
+  ownerErrors: Array<{ owner: string; code: string; message: string }>;
+  /** True if the authenticated /user/repos call succeeded. */
+  authedListOk: boolean;
+}
+
+/**
+ * Aggregate repositories from:
+ *   1. /user/repos (owner, collaborator, organization_member)
+ *   2. /users/{viewer}/repos as a fallback for viewer's owned repos
+ *   3. /orgs/{owner}/repos or /users/{owner}/repos for each configured extra owner
+ *
+ * Deduplicated by full_name. Failures for individual extra owners are recorded
+ * in ownerErrors and do not abort the aggregate.
+ *
+ * Extra owners come from `opts.extraOwners` plus the env var
+ * `DEPLOYOPS_GITHUB_OWNERS` (comma-separated). `Future-Horizons-Education` is
+ * always probed as a default best-effort and silently dropped if inaccessible.
+ */
+export async function ghListRepos(opts: ListReposOptions = {}): Promise<ListReposResult> {
+  const result: ListReposResult = {
+    repos: [],
+    owners: [],
+    ownerErrors: [],
+    authedListOk: false,
+  };
+  const seen = new Map<string, GhRepoSummary>();
+
+  /* 1. Authenticated user repos. If this fails, abort — auth is broken. */
+  try {
+    const authed = await ghListAuthenticatedUserRepos();
+    result.authedListOk = true;
+    for (const r of authed) seen.set(r.fullName, r);
+  } catch (err) {
+    /* Auth-related failure: rethrow so route layer maps to a structured error. */
+    throw err;
+  }
+
+  /* 2. Viewer's owned namespace as a fallback for any missed repos. */
+  let viewerLogin: string | null = null;
+  try {
+    const viewer = await ghViewer();
+    viewerLogin = viewer.login;
+    const viewerOwned = await ghListUserRepos(viewer.login);
+    for (const r of viewerOwned) if (!seen.has(r.fullName)) seen.set(r.fullName, r);
+  } catch (err) {
+    /* Non-fatal: just record. */
+    if (err instanceof GhError) {
+      result.ownerErrors.push({ owner: "(viewer)", code: err.code, message: err.message });
+    }
+  }
+
+  /* 3. Configured extra owners, deduped + filtered. */
+  const envOwners = (process.env.DEPLOYOPS_GITHUB_OWNERS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const defaultOwners = ["Future-Horizons-Education"];
+  const requested = [...envOwners, ...defaultOwners, ...(opts.extraOwners ?? [])];
+  const dedup = Array.from(new Set(requested.filter((o) => o && o !== viewerLogin)));
+
+  for (const owner of dedup) {
+    try {
+      const repos = await ghListOwnerRepos(owner);
+      let added = 0;
+      for (const r of repos) {
+        if (!seen.has(r.fullName)) { seen.set(r.fullName, r); added++; }
+      }
+      if (added > 0 || repos.length > 0) result.owners.push(owner);
+    } catch (err) {
+      if (err instanceof GhError) {
+        result.ownerErrors.push({ owner, code: err.code, message: err.message });
+      } else {
+        result.ownerErrors.push({ owner, code: "unknown", message: String(err) });
+      }
+    }
+  }
+
+  /* Sort by pushedAt desc for consistent UX. */
+  const repos = Array.from(seen.values()).sort((a, b) => {
+    const A = a.pushedAt ? Date.parse(a.pushedAt) : 0;
+    const B = b.pushedAt ? Date.parse(b.pushedAt) : 0;
+    return B - A;
+  });
+  result.repos = repos;
+  /* Surface viewer in owners list if any of their repos came through. */
+  if (viewerLogin && repos.some((r) => r.owner === viewerLogin)) {
+    if (!result.owners.includes(viewerLogin)) result.owners.unshift(viewerLogin);
+  }
+  return result;
 }
 
 /** List branches for a repository. */

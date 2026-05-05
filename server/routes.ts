@@ -78,16 +78,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.get("/api/github/repos", async (req, res) => {
     try {
-      const repos = await ghListRepos();
+      const ownerParam = String(req.query.owner ?? "").trim();
+      const extraOwners = ownerParam ? [ownerParam] : undefined;
+      const result = await ghListRepos({ extraOwners });
       const q = String(req.query.q ?? "").toLowerCase();
       const filtered = q
-        ? repos.filter((r) =>
+        ? result.repos.filter((r) =>
             r.fullName.toLowerCase().includes(q) ||
             (r.description ?? "").toLowerCase().includes(q) ||
             (r.language ?? "").toLowerCase().includes(q),
           )
-        : repos;
-      res.json({ ok: true, repos: filtered, total: repos.length });
+        : result.repos;
+      res.json({
+        ok: true,
+        repos: filtered,
+        total: result.repos.length,
+        owners: result.owners,
+        ownerErrors: result.ownerErrors,
+      });
     } catch (err) { sendGhError(res, err); }
   });
 

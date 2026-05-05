@@ -60,20 +60,34 @@ export interface DetectionResult {
 type Visibility = "all" | "public" | "private";
 type SortKey = "recent" | "name";
 
-interface RepoPayload { ok: boolean; repos: GhRepoSummary[]; total: number; }
+interface RepoPayload {
+  ok: boolean;
+  repos: GhRepoSummary[];
+  total: number;
+  owners?: string[];
+  ownerErrors?: Array<{ owner: string; code: string; message: string }>;
+}
 interface BranchPayload { ok: boolean; repo: string; branches: GhBranch[]; }
 interface DetectPayload { ok: boolean; repo: string; branch: string; detection: DetectionResult; }
 
 interface ApiError { error: string; code?: string; detail?: string }
 
 async function fetchOrThrow<T>(url: string): Promise<T> {
-  const res = await fetch(url);
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = (json ?? {}) as ApiError;
-    throw Object.assign(new Error(err.error || `${res.status}`), { code: err.code, detail: err.detail, status: res.status });
-  }
-  return json as T;
+  const res = await apiRequest("GET", url).catch(async (err) => {
+    /* apiRequest throws on non-OK with `${status}: ${text}` — re-shape for the UI. */
+    const message = String(err?.message ?? err);
+    const m = message.match(/^(\d+):\s*([\s\S]*)$/);
+    if (m) {
+      const status = Number(m[1]);
+      let parsed: ApiError = {} as ApiError;
+      try { parsed = JSON.parse(m[2]); } catch { /* keep raw */ }
+      throw Object.assign(new Error(parsed.error || message), {
+        code: parsed.code, detail: parsed.detail, status,
+      });
+    }
+    throw err;
+  });
+  return (await res.json()) as T;
 }
 
 function timeAgo(iso: string | null): string {
@@ -112,10 +126,19 @@ export function GithubRepoPicker({
   const [visibility, setVisibility] = useState<Visibility>("all");
   const [language, setLanguage] = useState<string>("all");
   const [sort, setSort] = useState<SortKey>("recent");
+  const [ownerFilter, setOwnerFilter] = useState<string>("all");
+  const [manualOwner, setManualOwner] = useState<string>("");
+  /* extraOwner is the owner currently being aggregated from the manual search box. */
+  const [extraOwner, setExtraOwner] = useState<string>("");
 
   const reposQ = useQuery<RepoPayload, Error>({
-    queryKey: ["/api/github/repos"],
-    queryFn: () => fetchOrThrow<RepoPayload>("/api/github/repos"),
+    queryKey: ["/api/github/repos", extraOwner || "default"],
+    queryFn: () => {
+      const url = extraOwner
+        ? `/api/github/repos?owner=${encodeURIComponent(extraOwner)}`
+        : "/api/github/repos";
+      return fetchOrThrow<RepoPayload>(url);
+    },
   });
 
   const repos = reposQ.data?.repos ?? [];
@@ -131,10 +154,24 @@ export function GithubRepoPicker({
     return Array.from(set).sort();
   }, [repos]);
 
+  /* derive owner facet from data */
+  const owners = useMemo(() => {
+    const set = new Set<string>();
+    repos.forEach((r) => { if (r.owner) set.add(r.owner); });
+    return Array.from(set).sort();
+  }, [repos]);
+
+  /* If the active ownerFilter no longer appears in the data, fall back to "all". */
+  const effectiveOwnerFilter = useMemo(
+    () => (ownerFilter === "all" || owners.includes(ownerFilter) ? ownerFilter : "all"),
+    [ownerFilter, owners],
+  );
+
   /* search + filters */
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     let list = repos.filter((r) => {
+      if (effectiveOwnerFilter !== "all" && r.owner !== effectiveOwnerFilter) return false;
       if (visibility === "public" && r.private) return false;
       if (visibility === "private" && !r.private) return false;
       if (language !== "all" && r.language !== language) return false;
@@ -156,7 +193,9 @@ export function GithubRepoPicker({
       });
     }
     return list;
-  }, [repos, search, visibility, language, sort]);
+  }, [repos, search, visibility, language, sort, effectiveOwnerFilter]);
+
+  const ownerErrors = reposQ.data?.ownerErrors ?? [];
 
   const branchesQ = useQuery<BranchPayload, Error>({
     queryKey: ["/api/github/branches", selectedRepoFullName],
@@ -206,7 +245,7 @@ export function GithubRepoPicker({
 
         {/* filters */}
         <div className="grid grid-cols-1 md:grid-cols-12 gap-2 mb-3">
-          <div className="md:col-span-6 relative">
+          <div className="md:col-span-4 relative">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
               value={search}
@@ -215,6 +254,17 @@ export function GithubRepoPicker({
               className="pl-8"
               data-testid="input-repo-search"
             />
+          </div>
+          <div className="md:col-span-2">
+            <Select value={effectiveOwnerFilter} onValueChange={setOwnerFilter}>
+              <SelectTrigger data-testid="select-owner"><SelectValue placeholder="Owner" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all" data-testid="option-owner-all">All owners</SelectItem>
+                {owners.map((o) => (
+                  <SelectItem key={o} value={o} data-testid={`option-owner-${o}`}>{o}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="md:col-span-2">
             <Select value={visibility} onValueChange={(v) => setVisibility(v as Visibility)}>
@@ -248,6 +298,56 @@ export function GithubRepoPicker({
           </div>
         </div>
 
+        {/* manual owner / org search — for orgs that aren't surfaced by user/orgs */}
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-2 mb-3">
+          <div className="md:col-span-9">
+            <Input
+              value={manualOwner}
+              onChange={(e) => setManualOwner(e.target.value)}
+              placeholder="Load repos from an additional owner or org (e.g. Future-Horizons-Education)"
+              data-testid="input-owner-search"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  setExtraOwner(manualOwner.trim());
+                }
+              }}
+            />
+          </div>
+          <div className="md:col-span-3 flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1"
+              onClick={() => setExtraOwner(manualOwner.trim())}
+              disabled={!manualOwner.trim() || manualOwner.trim() === extraOwner}
+              data-testid="button-load-owner"
+            >
+              Load owner
+            </Button>
+            {extraOwner && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { setExtraOwner(""); setManualOwner(""); }}
+                data-testid="button-clear-owner"
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* owner-error banner: when a configured owner couldn't be loaded */}
+        {ownerErrors.length > 0 && (
+          <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-600 dark:text-amber-400" data-testid="owner-errors">
+            {ownerErrors.map((e) => (
+              <div key={e.owner}>
+                <span className="font-mono">{e.owner}</span>: {e.code} — {e.message}
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* loading / error / empty states */}
         {reposQ.isLoading ? (
           <div className="space-y-2" data-testid="repos-loading">
@@ -257,7 +357,11 @@ export function GithubRepoPicker({
           <RepoErrorState error={reposError} onRetry={() => reposQ.refetch()} />
         ) : filtered.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground" data-testid="repos-empty">
-            {repos.length === 0 ? "No repositories returned by GitHub for this account." : "No repositories match the current filters."}
+            {repos.length === 0
+              ? "GitHub auth worked, but no repositories were returned. Try the manual owner/org loader above to pull repos for a specific account."
+              : effectiveOwnerFilter !== "all"
+              ? `No repositories under ${effectiveOwnerFilter} match the current filters.`
+              : "No repositories match the current filters."}
           </div>
         ) : (
           <ScrollArea className="h-[360px] rounded-md border border-border" data-testid="repos-list">
@@ -376,22 +480,29 @@ export function GithubRepoPicker({
 function RepoErrorState({
   error, onRetry,
 }: { error: Error & { code?: string; status?: number }; onRetry: () => void }) {
-  const code = error.code;
+  const code = error.code ?? "unknown";
   const title =
     code === "auth-missing" ? "GitHub authentication unavailable" :
     code === "rate-limit"   ? "GitHub API rate limit reached" :
     code === "not-found"    ? "GitHub user / repos not found" :
+    code === "network"      ? "Could not reach GitHub" :
     "Could not load repositories";
   const hint =
     code === "auth-missing" ? "Configure GITHUB_TOKEN (or run `gh auth login`) on the server, then refresh." :
     code === "rate-limit"   ? "Wait a few minutes and retry, or authenticate with a higher-limit token." :
-    "Try refreshing. If it persists, check the server logs.";
+    code === "not-found"    ? "Check the owner / repo name. The authenticated account may not have access." :
+    code === "network"      ? "The server could not reach GitHub. Check connectivity and retry." :
+    "Try refreshing. If it persists, check the server logs for the request id.";
   return (
     <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4" data-testid="repos-error">
       <div className="flex items-start gap-3">
         <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5" />
         <div className="flex-1">
-          <div className="text-sm font-medium">{title}</div>
+          <div className="text-sm font-medium flex items-center gap-2">
+            {title}
+            <Badge variant="outline" className="text-[10px] font-mono" data-testid="repos-error-code">{code}</Badge>
+            {error.status ? <Badge variant="outline" className="text-[10px] font-mono">HTTP {error.status}</Badge> : null}
+          </div>
           <div className="text-xs text-muted-foreground mt-0.5">{hint}</div>
           <div className="mt-2 text-[11px] font-mono text-muted-foreground" data-testid="repos-error-detail">
             {error.message}
