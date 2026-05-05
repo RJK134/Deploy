@@ -145,6 +145,7 @@ const ENV_TOKEN_NAME: Record<ProviderKey, string> = {
   neon: "NEON_API_KEY",
   prisma: "PRISMA_API_KEY",
   railway: "RAILWAY_TOKEN",
+  supabase: "SUPABASE_ACCESS_TOKEN",
 };
 
 export function envTokenName(provider: ProviderKey): string {
@@ -191,7 +192,7 @@ export function registerConnectionRoutes(app: Express): void {
   app.get("/api/connections", async (_req, res) => {
     const rows = await storage.listProviderConnections();
     const byProvider = new Map(rows.map((r) => [r.provider, r]));
-    const keys: ProviderKey[] = ["github", "vercel", "neon", "prisma", "railway"];
+    const keys: ProviderKey[] = ["github", "vercel", "neon", "prisma", "railway", "supabase"];
     const items = keys.map((k) => viewFor(k, byProvider.get(k) ?? null));
     res.json({
       ok: true,
@@ -512,7 +513,7 @@ export function registerConnectionRoutes(app: Express): void {
   app.get("/api/live/readiness", async (_req, res) => {
     const rows = await storage.listProviderConnections();
     const byProvider = new Map(rows.map((r) => [r.provider, r]));
-    const keys: ProviderKey[] = ["github", "vercel", "neon", "prisma", "railway"];
+    const keys: ProviderKey[] = ["github", "vercel", "neon", "prisma", "railway", "supabase"];
     const liveEnabled = process.env.DEPLOYOPS_LIVE === "1";
     const encConfigured = encryptionConfigured();
     const items = keys.map((k) => {

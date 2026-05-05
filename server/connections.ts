@@ -13,7 +13,7 @@
  * place that decrypts the cipher pulled from storage.
  */
 
-export type ProviderKey = "github" | "vercel" | "neon" | "prisma" | "railway";
+export type ProviderKey = "github" | "vercel" | "neon" | "prisma" | "railway" | "supabase";
 
 export interface ProviderAccount {
   /** Stable id from the provider (login, slug, uuid). */
@@ -357,6 +357,63 @@ export async function railwayValidate(token: string): Promise<ValidationResult> 
   };
 }
 
+/* ------------------------------ Supabase -------------------------------- */
+
+export const supabaseMeta: ConnectionMeta = {
+  provider: "supabase",
+  label: "Supabase",
+  credentialLabel: "Supabase Personal Access Token",
+  credentialDescription:
+    "Used by the Supabase Management API to list organizations/projects and (when allowed) create projects. Generate at Supabase → Account → Access Tokens.",
+  requiredScopes: ["projects:read"],
+  recommendedScopes: ["projects:read", "organizations:read", "projects:write"],
+  tokenCreateUrl: "https://supabase.com/dashboard/account/tokens",
+  docsUrl: "https://supabase.com/docs/reference/api/introduction",
+  oauthAvailable: false,
+};
+
+export async function supabaseValidate(token: string): Promise<ValidationResult> {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  if (!token) return { ok: false, account: null, scopes: [], errors: ["empty token"] };
+
+  /* Supabase Management API: GET /v1/organizations is the cheapest auth check. */
+  const orgRes = await fetchJson("https://api.supabase.com/v1/organizations", {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+  });
+  if (!orgRes.ok) {
+    if (orgRes.status === 401 || orgRes.status === 403) errors.push("token rejected by Supabase (auth)");
+    else errors.push(`Supabase /v1/organizations returned ${orgRes.status}`);
+    return { ok: false, account: null, scopes: [], errors };
+  }
+  const orgs = Array.isArray(orgRes.json) ? orgRes.json : [];
+
+  /* Best-effort projects list — may be empty for new accounts. */
+  const projRes = await fetchJson("https://api.supabase.com/v1/projects", {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+  });
+  const projects = projRes.ok && Array.isArray(projRes.json) ? projRes.json : [];
+  if (!projRes.ok) warnings.push(`could not list projects (${projRes.status})`);
+
+  return {
+    ok: true,
+    account: {
+      id: String(orgs[0]?.id ?? "supabase-account"),
+      name: orgs[0]?.name ?? "Supabase account",
+      extra: {
+        organizations: orgs.slice(0, 10).map((o: any) => ({ id: o.id, name: o.name, slug: o.slug })),
+        projectCount: projects.length,
+        projects: projects.slice(0, 10).map((p: any) => ({
+          id: p.id, name: p.name, region: p.region, organizationId: p.organization_id,
+        })),
+      },
+    },
+    scopes: ["projects:read", ...(orgs.length > 0 ? ["organizations:read"] : [])],
+    errors,
+    warnings,
+  };
+}
+
 /* ------------------------------- registry ------------------------------- */
 
 export const PROVIDER_META: Record<ProviderKey, ConnectionMeta> = {
@@ -365,19 +422,21 @@ export const PROVIDER_META: Record<ProviderKey, ConnectionMeta> = {
   neon: neonMeta,
   prisma: prismaMeta,
   railway: railwayMeta,
+  supabase: supabaseMeta,
 };
 
 export async function validateProvider(provider: ProviderKey, token: string): Promise<ValidationResult> {
   switch (provider) {
-    case "github":  return githubValidate(token);
-    case "vercel":  return vercelValidate(token);
-    case "neon":    return neonValidate(token);
-    case "prisma":  return prismaValidate(token);
-    case "railway": return railwayValidate(token);
+    case "github":   return githubValidate(token);
+    case "vercel":   return vercelValidate(token);
+    case "neon":     return neonValidate(token);
+    case "prisma":   return prismaValidate(token);
+    case "railway":  return railwayValidate(token);
+    case "supabase": return supabaseValidate(token);
     default: return { ok: false, account: null, scopes: [], errors: [`unknown provider: ${provider}`] };
   }
 }
 
 export function isProviderKey(s: string): s is ProviderKey {
-  return ["github", "vercel", "neon", "prisma", "railway"].includes(s);
+  return ["github", "vercel", "neon", "prisma", "railway", "supabase"].includes(s);
 }

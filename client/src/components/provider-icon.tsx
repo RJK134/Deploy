@@ -1,4 +1,4 @@
-import { SiGithub, SiVercel, SiPrisma, SiRailway } from "react-icons/si";
+import { SiGithub, SiVercel, SiPrisma, SiRailway, SiSupabase } from "react-icons/si";
 import { Database } from "lucide-react";
 
 const map: Record<string, any> = {
@@ -6,6 +6,7 @@ const map: Record<string, any> = {
   vercel: SiVercel,
   prisma: SiPrisma,
   railway: SiRailway,
+  supabase: SiSupabase,
 };
 
 export function ProviderIcon({ provider, className = "h-4 w-4" }: { provider: string; className?: string }) {
@@ -25,6 +26,7 @@ export function providerLabel(p: string) {
     case "neon": return "Neon Postgres";
     case "prisma": return "Prisma Postgres";
     case "railway": return "Railway";
+    case "supabase": return "Supabase";
     default: return p;
   }
 }

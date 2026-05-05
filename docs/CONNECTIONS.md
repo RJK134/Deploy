@@ -1,19 +1,20 @@
 # Provider Connections — DeployOps Console
 
-DeployOps connects to GitHub, Vercel, Neon, Prisma, and Railway through a
-**Connection Center**. Tokens are encrypted at rest with AES-256-GCM and
-never returned to the client after they're saved. This document covers
-setup, scopes, security, and the live-readiness gates.
+DeployOps connects to GitHub, Vercel, Neon, Prisma, Railway, and Supabase
+through a **Connection Center**. Tokens are encrypted at rest with
+AES-256-GCM and never returned to the client after they're saved. This
+document covers setup, scopes, security, and the live-readiness gates.
 
 ## Overview
 
 | Provider | Auth method(s)               | What it unlocks                                  |
 |----------|------------------------------|--------------------------------------------------|
 | GitHub   | OAuth web flow + PAT fallback| Repo discovery, branch listing, framework detect, PR/workflow writes |
-| Vercel   | Personal Access Token        | Project listing, env vars, deploys              |
-| Neon     | Neon API key                 | List/branch projects                            |
-| Prisma   | Management API token         | List projects/regions, manage databases         |
-| Railway  | API token                    | Project/service listing, deploys                |
+| Vercel   | Personal Access Token        | Project listing/create, team selection, env-var upsert, deploys |
+| Neon     | Neon API key                 | List/branch projects, real project + branch create, connection URI |
+| Prisma   | Management API token         | List projects/regions, manage databases (when Mgmt API reachable) |
+| Railway  | API token                    | Viewer + projects (GraphQL), project create, variable upsert |
+| Supabase | Supabase access token        | List orgs/projects, project create, API-key fetch |
 
 Reads are allowed once a connection is `connected`. Live writes require the
 provider's per-connection live mode AND the global `DEPLOYOPS_LIVE=1`.
@@ -81,6 +82,28 @@ Generate a token in the Prisma Console. Required: `projects:read`.
 
 Generate a token at <https://railway.app/account/tokens>. Required:
 `projects:read`. Live writes require `deployments:write`.
+
+### Supabase
+
+Generate a personal access token at
+<https://supabase.com/dashboard/account/tokens>. The token operates against
+the Supabase Management API. Required scope: `projects:read`. Project
+creation requires `projects:write` and an organization to attach the new
+project to. Env var name: `SUPABASE_ACCESS_TOKEN`.
+
+Two operating modes are supported:
+
+1. **Create new project** — orchestrator picks the first organization the
+   token has access to, generates a strong random db password (never
+   persisted), and POSTs `/v1/projects`. After ~minute, the orchestrator
+   fetches `/v1/projects/{ref}/api-keys` to read the anon key for env
+   injection.
+2. **Use existing project** — the wizard accepts URL + anon key (and
+   optionally service role key). DeployOps validates shape and injects the
+   appropriate env vars (`SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_URL`,
+   `SUPABASE_ANON_KEY`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
+   `SUPABASE_SERVICE_ROLE_KEY`) into Vercel. No external Supabase write
+   happens in this mode.
 
 ## Connecting
 

@@ -10,7 +10,9 @@ A DeployOps Console for orchestrating GitHub deployments to Test → Demo → De
 
 **Vercel deploys are now real**, not simulated. When the user picks a real GitHub repo + branch, switches the wizard into Live deploy mode, clears the readiness gates (Vercel token resolved, Vercel-GitHub integration installed, `DEPLOYOPS_LIVE=1`), and clicks **Start live deployment** on the run page, DeployOps calls Vercel's REST `POST /v13/deployments` and polls the real status until the upstream deployment is `READY` (success), `ERROR`, or `CANCELED`. No simulated success states are presented as real deployments.
 
-Other providers (Neon, Prisma, Railway) remain dry-run plans only in this branch. They are clearly labelled `validated_dry_run` in the run table — never `succeeded`.
+**Neon, Prisma, Railway, and Supabase are now real adapters**, not dry-run stubs. The combined orchestrator at `POST /api/live/preflight` and `POST /api/live/runs/:id/execute` validates credentials, plans steps, and (with `DEPLOYOPS_LIVE=1` + `confirm: "I UNDERSTAND"` + per-connection `live_mode`) creates real provider resources: Neon project + branch + connection URI, Prisma database (when Mgmt API is reachable), Railway project, Supabase project (or registers an existing one). The orchestrator then upserts the resulting connection strings + Supabase keys into Vercel env vars and triggers the deployment. Each step is persisted in `provisioning_steps`; each external resource lands in `provider_resources` with an `external_id` only when the provider returned 2xx. See `docs/LIVE_PROVISIONING.md` for the full contract, blocker codes, and security model.
+
+Blocked paths return `live_blocked` with structured `{code, message, remediation}` blockers — never a fake "succeeded". Examples: `vercel-github-integration-required`, `prisma-mgmt-api-unavailable`, `prisma-project-required`, `supabase-no-organizations`, `supabase-quota`, `railway-projects-unavailable`.
 
 ## Pages (hash routing)
 | Route | File | Purpose |

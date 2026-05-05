@@ -318,6 +318,76 @@ export const insertGithubRepoSchema = createInsertSchema(githubRepos).omit({ id:
 export type InsertGithubRepo = z.infer<typeof insertGithubRepoSchema>;
 export type GithubRepoRow = typeof githubRepos.$inferSelect;
 
+/* ----------------------- live provider resources ------------------------- */
+/**
+ * Provider resources — external resources DeployOps Console knows about
+ * because it created or referenced them through a provider's API.
+ *
+ * One row per real provider resource. We intentionally store the bare metadata
+ * needed to look the resource up again, plus a masked secret reference (never
+ * a raw connection string or API key). Server-side code can re-fetch the live
+ * secret from the provider when injecting env vars; the client only sees a
+ * masked label.
+ *
+ * `status`:
+ *   - planned                — resource has been described but not created
+ *   - validated_dry_run      — preflight passed; no external write performed
+ *   - blocked                — required scope/credential/integration missing
+ *   - provisioning           — provider call in flight
+ *   - succeeded              — provider returned ready/created with confirmed external_id
+ *   - failed                 — provider returned an error or refused
+ */
+export const providerResources = sqliteTable("provider_resources", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  provider: text("provider").notNull(),         // vercel|neon|prisma|railway|supabase
+  resourceType: text("resource_type").notNull(),// project|branch|database|service|env-var|connection-string|alias
+  externalId: text("external_id"),              // provider's stable id; null until confirmed
+  name: text("name").notNull(),
+  environment: text("environment"),             // test|demo|deploy|null (for repo-level resources)
+  url: text("url"),                             // dashboard URL or live URL when applicable
+  maskedSecretRef: text("masked_secret_ref"),   // e.g. neon:project/branch:role — used to look up real secret server-side
+  status: text("status").notNull().default("planned"),
+  runId: integer("run_id"),
+  projectId: integer("project_id"),
+  metadata: text("metadata_json").notNull().default("{}"),
+  errorMessage: text("error_message"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+export const insertProviderResourceSchema = createInsertSchema(providerResources).omit({
+  id: true, createdAt: true, updatedAt: true,
+});
+export type InsertProviderResource = z.infer<typeof insertProviderResourceSchema>;
+export type ProviderResource = typeof providerResources.$inferSelect;
+
+/**
+ * Provisioning steps — per-step audit of a live provisioning run.
+ * Mirrors the run-level events but is structured per provider/action so the UI
+ * can show readiness → preflight → provision in order. Real actions only;
+ * dry-run uses status `planned` or `validated_dry_run`, never `succeeded`.
+ */
+export const provisioningSteps = sqliteTable("provisioning_steps", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  runId: integer("run_id").notNull(),
+  order: integer("order_idx").notNull(),
+  provider: text("provider").notNull(),
+  action: text("action").notNull(),             // validate|preflight|provision|inject-env|deploy|poll
+  label: text("label").notNull(),
+  status: text("status").notNull().default("pending"), // pending|blocked|running|succeeded|failed|planned|validated_dry_run
+  blockerCode: text("blocker_code"),
+  blockerMessage: text("blocker_message"),
+  remediation: text("remediation"),
+  metadata: text("metadata_json").notNull().default("{}"),
+  log: text("log").notNull().default(""),
+  startedAt: integer("started_at"),
+  finishedAt: integer("finished_at"),
+});
+export const insertProvisioningStepSchema = createInsertSchema(provisioningSteps).omit({
+  id: true, startedAt: true, finishedAt: true,
+});
+export type InsertProvisioningStep = z.infer<typeof insertProvisioningStepSchema>;
+export type ProvisioningStep = typeof provisioningSteps.$inferSelect;
+
 export const auditLogs = sqliteTable("audit_logs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   scope: text("scope").notNull(),                  // fixbot|run|provider|migration

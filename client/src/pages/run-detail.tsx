@@ -42,6 +42,17 @@ export default function RunDetail() {
     },
   });
 
+  /* Live provisioning steps + resources — populated by the orchestrator. */
+  const liveStepsQ = useQuery<any>({
+    queryKey: ["/api/live/runs", id, "steps"],
+    enabled: id != null,
+    refetchInterval: livePolling ? 3000 : false,
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/live/runs/${id}/steps`);
+      return res.json();
+    },
+  });
+
   const advance = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/runs/${id}/advance`, {});
@@ -229,6 +240,9 @@ export default function RunDetail() {
           loading={liveStatusQ.isLoading}
         />
       )}
+
+      {/* Live provisioning steps and persisted external resources. */}
+      <LiveProvisioningPanel data={liveStepsQ.data} loading={liveStepsQ.isLoading} />
 
       {/* Stages — hidden for live runs since they go through Vercel directly. */}
       {!isLive && (
@@ -428,6 +442,86 @@ function LiveVercelPanel({ run, live, loading }: { run: any; live: any; loading:
     }).join("\n")}
           </pre>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function LiveProvisioningPanel({ data, loading }: { data: any; loading: boolean }) {
+  const steps: any[] = Array.isArray(data?.steps) ? data.steps : [];
+  const resources: any[] = Array.isArray(data?.resources) ? data.resources : [];
+  if (!loading && steps.length === 0 && resources.length === 0) return null;
+  return (
+    <Card className="mb-6" data-testid="card-live-provisioning">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm flex items-center gap-2">
+          <ShieldAlert className="h-4 w-4" /> Live provisioning
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {loading && <Skeleton className="h-24 w-full" />}
+        {!loading && steps.length > 0 && (
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Steps</div>
+            <ul className="space-y-1.5 text-xs">
+              {steps.map((s: any) => (
+                <li key={s.id} className="flex items-start gap-2 rounded border border-border bg-card px-2 py-1.5" data-testid={`prov-step-${s.id}`}>
+                  <Badge variant="outline" className={cn(
+                    "text-[9px] font-mono uppercase",
+                    s.status === "succeeded" && "border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
+                    s.status === "validated_dry_run" && "border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
+                    s.status === "blocked" && "border-amber-500/40 text-amber-600 dark:text-amber-400",
+                    s.status === "failed" && "border-red-500/40 text-red-600 dark:text-red-400",
+                  )}>
+                    {s.status}
+                  </Badge>
+                  <ProviderIcon provider={s.provider} className="h-3.5 w-3.5 mt-0.5 text-muted-foreground" />
+                  <div className="flex-1">
+                    <div className="text-foreground/90">{s.label}</div>
+                    {s.blockerCode && (
+                      <div className="text-[10px] text-amber-600 dark:text-amber-400 font-mono mt-0.5">
+                        {s.blockerCode}: {s.blockerMessage}
+                      </div>
+                    )}
+                    {s.remediation && (
+                      <div className="text-[10px] text-muted-foreground mt-0.5">→ {s.remediation}</div>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {!loading && resources.length > 0 && (
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Provider resources</div>
+            <ul className="space-y-1.5 text-xs">
+              {resources.map((r: any) => (
+                <li key={r.id} className="flex items-center gap-2 rounded border border-border bg-card px-2 py-1.5" data-testid={`prov-res-${r.id}`}>
+                  <ProviderIcon provider={r.provider} className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="font-mono text-[10px] text-muted-foreground">{r.resourceType}</span>
+                  <span className="text-foreground/90 flex-1 truncate" title={r.name}>{r.name}</span>
+                  {r.externalId && (
+                    <span className="font-mono text-[10px] text-muted-foreground">{String(r.externalId).slice(0, 16)}</span>
+                  )}
+                  {r.url && (
+                    <a href={r.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-primary hover:underline">
+                      open
+                    </a>
+                  )}
+                  <Badge variant="outline" className={cn(
+                    "text-[9px] font-mono uppercase",
+                    r.status === "succeeded" && "border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
+                    r.status === "blocked" && "border-amber-500/40 text-amber-600 dark:text-amber-400",
+                    r.status === "failed" && "border-red-500/40 text-red-600 dark:text-red-400",
+                  )}>
+                    {r.status}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

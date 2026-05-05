@@ -220,6 +220,219 @@ export async function vercelFindProjectForRepo(
   ) ?? null;
 }
 
+/**
+ * Get a single Vercel project by name or id within a scope.
+ */
+export async function vercelGetProject(
+  token: string,
+  idOrName: string,
+  teamId?: string,
+): Promise<VercelProject | null> {
+  const res = await vercelFetch(token, `/v9/projects/${encodeURIComponent(idOrName)}`, {
+    query: { teamId },
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      throw new VercelError("Vercel token unauthorized for project read", res.status, "unauthorized");
+    }
+    throw new VercelError(`Vercel project fetch failed (${res.status})`, res.status, "project-fetch-failed");
+  }
+  return projectFromApi(res.json);
+}
+
+/**
+ * Create a Vercel project linked to a GitHub repo.
+ *
+ * NOTE: Vercel only links to a GitHub repo here when the Vercel-GitHub app is
+ * already installed on the org/user and the repo is accessible. If link
+ * creation fails because of integration absence, this surfaces as
+ * `vercel-github-integration-required`.
+ */
+export interface CreateProjectInput {
+  name: string;
+  /** repo "owner/name" — used for gitRepository link. */
+  repo?: string;
+  /** branch to use as production branch. */
+  productionBranch?: string;
+  framework?: string | null;
+  rootDirectory?: string | null;
+  buildCommand?: string | null;
+  outputDirectory?: string | null;
+  teamId?: string;
+}
+
+export async function vercelCreateProject(
+  token: string,
+  input: CreateProjectInput,
+): Promise<VercelProject> {
+  const body: Record<string, any> = {
+    name: input.name,
+    ...(input.framework ? { framework: input.framework } : {}),
+    ...(input.rootDirectory ? { rootDirectory: input.rootDirectory } : {}),
+    ...(input.buildCommand ? { buildCommand: input.buildCommand } : {}),
+    ...(input.outputDirectory ? { outputDirectory: input.outputDirectory } : {}),
+  };
+  if (input.repo) {
+    const [owner, name] = input.repo.split("/");
+    if (!owner || !name) {
+      throw new VercelError(`invalid repo "${input.repo}" — expected owner/name`, 400, "bad-repo");
+    }
+    body.gitRepository = {
+      type: "github",
+      repo: `${owner}/${name}`,
+      ...(input.productionBranch ? { productionBranch: input.productionBranch } : {}),
+    };
+  }
+
+  const res = await vercelFetch(token, "/v10/projects", {
+    method: "POST",
+    body,
+    query: { teamId: input.teamId },
+  });
+  if (!res.ok) {
+    const code = String(res.json?.error?.code ?? "");
+    const msg = res.json?.error?.message ?? `Vercel project create failed (${res.status})`;
+    if (res.status === 401 || res.status === 403) {
+      throw new VercelError("Vercel token unauthorized for project create", res.status, "unauthorized");
+    }
+    if (
+      code === "missing_github_integration" ||
+      code === "github_app_not_installed" ||
+      code === "not_found_repo" ||
+      /github.*integration/i.test(msg) ||
+      /not authorized to access this repository/i.test(msg)
+    ) {
+      throw new VercelError(
+        "Vercel-GitHub integration is required to link this repo. Install the Vercel app on the GitHub org/user, then retry.",
+        409, "vercel-github-integration-required", res.json?.error,
+      );
+    }
+    if (code === "name_taken" || /already exists/i.test(msg)) {
+      throw new VercelError(msg, res.status, "project-name-taken", res.json?.error);
+    }
+    throw new VercelError(msg, res.status, code || "project-create-failed", res.json?.error);
+  }
+  return projectFromApi(res.json);
+}
+
+/* --------------------------- env var management ------------------------- */
+
+export type VercelEnvTarget = "production" | "preview" | "development";
+
+export interface VercelEnvVar {
+  id: string;
+  key: string;
+  /** Vercel returns `value` only for some endpoints; for security usually omitted. */
+  value?: string | null;
+  type: "plain" | "encrypted" | "secret" | "system";
+  target: VercelEnvTarget[];
+  gitBranch?: string | null;
+}
+
+export async function vercelListEnvVars(
+  token: string,
+  projectIdOrName: string,
+  teamId?: string,
+): Promise<VercelEnvVar[]> {
+  const res = await vercelFetch(token, `/v10/projects/${encodeURIComponent(projectIdOrName)}/env`, {
+    query: { teamId },
+  });
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      throw new VercelError("Vercel token unauthorized for env list", res.status, "unauthorized");
+    }
+    if (res.status === 404) return [];
+    throw new VercelError(`Vercel env list failed (${res.status})`, res.status, "env-list-failed");
+  }
+  const envs = Array.isArray(res.json?.envs) ? res.json.envs : [];
+  return envs.map((e: any): VercelEnvVar => ({
+    id: String(e.id ?? ""),
+    key: String(e.key ?? ""),
+    value: typeof e.value === "string" ? e.value : null,
+    type: (e.type ?? "encrypted") as VercelEnvVar["type"],
+    target: Array.isArray(e.target) ? e.target : [],
+    gitBranch: e.gitBranch ?? null,
+  }));
+}
+
+export interface UpsertEnvVarInput {
+  key: string;
+  value: string;
+  target: VercelEnvTarget[];
+  type?: "plain" | "encrypted";
+  gitBranch?: string | null;
+}
+
+/**
+ * Create or update an env var on a Vercel project. Idempotent — if the key
+ * already exists with the same target it is updated (PATCH) rather than
+ * recreated. Real Vercel write call. Caller MUST gate on liveMode + confirmation.
+ */
+export async function vercelUpsertEnvVar(
+  token: string,
+  projectIdOrName: string,
+  input: UpsertEnvVarInput,
+  teamId?: string,
+): Promise<{ id: string; created: boolean }> {
+  const existing = await vercelListEnvVars(token, projectIdOrName, teamId);
+  const match = existing.find((e) =>
+    e.key === input.key &&
+    e.target.some((t) => input.target.includes(t)),
+  );
+
+  if (match) {
+    const res = await vercelFetch(
+      token,
+      `/v10/projects/${encodeURIComponent(projectIdOrName)}/env/${encodeURIComponent(match.id)}`,
+      {
+        method: "PATCH",
+        body: {
+          value: input.value,
+          target: input.target,
+          type: input.type ?? "encrypted",
+          ...(input.gitBranch ? { gitBranch: input.gitBranch } : {}),
+        },
+        query: { teamId },
+      },
+    );
+    if (!res.ok) {
+      throw new VercelError(
+        res.json?.error?.message ?? `Vercel env update failed (${res.status})`,
+        res.status,
+        String(res.json?.error?.code ?? "env-update-failed"),
+        res.json?.error,
+      );
+    }
+    return { id: match.id, created: false };
+  }
+
+  const res = await vercelFetch(token, `/v10/projects/${encodeURIComponent(projectIdOrName)}/env`, {
+    method: "POST",
+    body: {
+      key: input.key,
+      value: input.value,
+      target: input.target,
+      type: input.type ?? "encrypted",
+      ...(input.gitBranch ? { gitBranch: input.gitBranch } : {}),
+    },
+    query: { teamId },
+  });
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      throw new VercelError("Vercel token unauthorized for env create", res.status, "unauthorized");
+    }
+    throw new VercelError(
+      res.json?.error?.message ?? `Vercel env create failed (${res.status})`,
+      res.status,
+      String(res.json?.error?.code ?? "env-create-failed"),
+      res.json?.error,
+    );
+  }
+  const id = String(res.json?.id ?? res.json?.created?.id ?? "");
+  return { id, created: true };
+}
+
 /* ----------------------------- deployments ----------------------------- */
 
 export type VercelDeploymentReadyState =

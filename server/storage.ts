@@ -2,6 +2,7 @@ import {
   projects, runs, stages, blueprints, providers,
   healthChecks, incidents, diagnoses, remediations, auditLogs,
   githubRepos, providerConnections, connectionEvents,
+  providerResources, provisioningSteps,
   type Project, type InsertProject,
   type Run, type InsertRun,
   type Stage, type InsertStage,
@@ -15,6 +16,8 @@ import {
   type InsertGithubRepo, type GithubRepoRow,
   type ProviderConnection, type InsertProviderConnection,
   type ConnectionEvent, type InsertConnectionEvent,
+  type ProviderResource, type InsertProviderResource,
+  type ProvisioningStep, type InsertProvisioningStep,
 } from "@shared/schema";
 import { eq, asc, desc } from "drizzle-orm";
 import { db, dbInfo } from "./db";
@@ -89,6 +92,17 @@ export interface IStorage {
   /* connection events */
   listConnectionEvents(provider?: string, limit?: number): Promise<ConnectionEvent[]>;
   createConnectionEvent(e: InsertConnectionEvent): Promise<ConnectionEvent>;
+
+  /* live provider resources */
+  listProviderResources(filter?: { runId?: number; projectId?: number; provider?: string }): Promise<ProviderResource[]>;
+  getProviderResource(id: number): Promise<ProviderResource | undefined>;
+  createProviderResource(r: InsertProviderResource): Promise<ProviderResource>;
+  updateProviderResource(id: number, patch: Partial<InsertProviderResource> & { errorMessage?: string | null }): Promise<ProviderResource | undefined>;
+
+  /* provisioning steps */
+  listProvisioningSteps(runId: number): Promise<ProvisioningStep[]>;
+  createProvisioningStep(s: InsertProvisioningStep): Promise<ProvisioningStep>;
+  updateProvisioningStep(id: number, patch: Partial<ProvisioningStep>): Promise<ProvisioningStep | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -303,6 +317,40 @@ export class DatabaseStorage implements IStorage {
   async createConnectionEvent(e: InsertConnectionEvent): Promise<ConnectionEvent> {
     return db.insert(connectionEvents).values({ ...e, createdAt: Date.now() } as any).returning().get();
   }
+
+  /* ----- live provider resources ----- */
+  async listProviderResources(filter: { runId?: number; projectId?: number; provider?: string } = {}): Promise<ProviderResource[]> {
+    const all = db.select().from(providerResources).orderBy(desc(providerResources.createdAt)).all() as ProviderResource[];
+    return all.filter((r) =>
+      (filter.runId === undefined || r.runId === filter.runId) &&
+      (filter.projectId === undefined || r.projectId === filter.projectId) &&
+      (filter.provider === undefined || r.provider === filter.provider),
+    );
+  }
+  async getProviderResource(id: number): Promise<ProviderResource | undefined> {
+    return db.select().from(providerResources).where(eq(providerResources.id, id)).get();
+  }
+  async createProviderResource(r: InsertProviderResource): Promise<ProviderResource> {
+    const now = Date.now();
+    return db.insert(providerResources).values({ ...r, createdAt: now, updatedAt: now } as any).returning().get();
+  }
+  async updateProviderResource(id: number, patch: Partial<InsertProviderResource> & { errorMessage?: string | null }): Promise<ProviderResource | undefined> {
+    return db.update(providerResources)
+      .set({ ...patch, updatedAt: Date.now() } as any)
+      .where(eq(providerResources.id, id))
+      .returning().get();
+  }
+
+  /* ----- provisioning steps ----- */
+  async listProvisioningSteps(runId: number): Promise<ProvisioningStep[]> {
+    return db.select().from(provisioningSteps).where(eq(provisioningSteps.runId, runId)).orderBy(asc(provisioningSteps.order)).all();
+  }
+  async createProvisioningStep(s: InsertProvisioningStep): Promise<ProvisioningStep> {
+    return db.insert(provisioningSteps).values(s as any).returning().get();
+  }
+  async updateProvisioningStep(id: number, patch: Partial<ProvisioningStep>): Promise<ProvisioningStep | undefined> {
+    return db.update(provisioningSteps).set(patch as any).where(eq(provisioningSteps.id, id)).returning().get();
+  }
 }
 
 export const storage = new DatabaseStorage();
@@ -334,8 +382,13 @@ async function seed() {
       },
       {
         key: "railway", name: "Railway", status: "disconnected", mode: "dry-run",
-        notes: "No managed connector. Provide a Railway API token in Settings to enable. Manual CLI guidance is offered as a fallback.",
-        capabilities: JSON.stringify(["template-link", "manual-cli-guide"]),
+        notes: "Real Railway adapter via GraphQL API. Project create/list works once a Railway API token is connected.",
+        capabilities: JSON.stringify(["validate-viewer", "list-projects", "create-project", "upsert-variable"]),
+      },
+      {
+        key: "supabase", name: "Supabase", status: "disconnected", mode: "dry-run",
+        notes: "Simpler database alternative — Supabase Management API. Project create requires org+region+db_pass, or supply existing project URL + anon key.",
+        capabilities: JSON.stringify(["list-organizations", "list-projects", "create-project", "register-existing"]),
       },
     ];
     for (const p of defaults) await storage.upsertProvider(p);

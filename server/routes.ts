@@ -25,6 +25,12 @@ import { registerConnectionRoutes, resolveActiveToken } from "./connections-rout
 import {
   startLiveVercelDeploy, pollLiveVercelDeploy, checkLiveVercelReadiness,
 } from "./live-deploy";
+import {
+  preflightPlan, executePlan, type DatabaseProvider, type HostingProvider,
+} from "./live-provisioning";
+import {
+  neonReadiness, prismaReadiness, railwayReadiness, supabaseReadiness,
+} from "./live-providers";
 
 /* Helper: parse JSON columns safely */
 function parseJSON<T>(raw: string | null | undefined, fallback: T): T {
@@ -689,6 +695,116 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  /* ----------------------- live provisioning ---------------------------- */
+  /**
+   * Per-provider read-only readiness for the database providers + Supabase.
+   * Surfaces blockers + the discoverable resources (orgs, projects) so the
+   * wizard can render account-aware cards.
+   */
+  app.get("/api/live/providers/readiness", async (_req, res) => {
+    const liveEnabled = process.env.DEPLOYOPS_LIVE === "1";
+    const [neonAuth, prismaAuth, railwayAuth, supabaseAuth] = await Promise.all([
+      resolveActiveToken("neon"),
+      resolveActiveToken("prisma"),
+      resolveActiveToken("railway"),
+      resolveActiveToken("supabase"),
+    ]);
+    const [neon, prisma, railway, supabase] = await Promise.all([
+      neonReadiness(neonAuth?.token ?? null),
+      prismaReadiness(prismaAuth?.token ?? null),
+      railwayReadiness(railwayAuth?.token ?? null),
+      supabaseReadiness(supabaseAuth?.token ?? null),
+    ]);
+    res.json({
+      ok: true,
+      liveEnabled,
+      providers: {
+        neon: { blockers: neon.blockers, projectCount: neon.projects.length, projects: neon.projects, source: neonAuth?.source ?? null },
+        prisma: { blockers: prisma.blockers, apiAvailable: prisma.apiAvailable, projectCount: prisma.projects.length, projects: prisma.projects, source: prismaAuth?.source ?? null },
+        railway: { blockers: railway.blockers, viewer: railway.viewer, projectCount: railway.projects.length, source: railwayAuth?.source ?? null },
+        supabase: { blockers: supabase.blockers, organizations: supabase.organizations, projectCount: supabase.projects.length, projects: supabase.projects, source: supabaseAuth?.source ?? null },
+      },
+    });
+  });
+
+  /**
+   * Combined preflight for a (repo, branch, environment, hosting, database).
+   * No persistence, no external writes, no resource creation.
+   */
+  app.post("/api/live/preflight", async (req, res) => {
+    try {
+      const body = parsePlanBody(req.body);
+      if (!body.ok) return res.status(400).json({ error: body.error, code: "bad-request" });
+      const report = await preflightPlan(body.value);
+      res.json({ ok: true, ...report });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+    }
+  });
+
+  /**
+   * Execute a provisioning run. `dryRun=true` (default) only persists steps
+   * and never makes external writes. `dryRun=false` triggers real provider
+   * calls and requires `confirm: "I UNDERSTAND"` plus DEPLOYOPS_LIVE=1.
+   *
+   * The route looks up an existing run row by `runId`. The wizard creates a
+   * run via POST /api/runs first (which seeds the dry-run stage plan), then
+   * calls this endpoint with the plan body to perform real provisioning.
+   */
+  app.post("/api/live/runs/:id/execute", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: "bad run id", code: "bad-request" });
+    const run = await storage.getRun(id);
+    if (!run) return res.status(404).json({ error: "run not found", code: "not-found" });
+
+    const body = parsePlanBody(req.body);
+    if (!body.ok) return res.status(400).json({ error: body.error, code: "bad-request" });
+
+    const dryRun = req.body?.dryRun !== false; /* default true */
+    const confirm = typeof req.body?.confirm === "string" ? req.body.confirm.trim() : "";
+    if (!dryRun) {
+      const confirmRequired = process.env.DEPLOYOPS_CONFIRM_LIVE_DEPLOY !== "0";
+      if (confirmRequired && confirm.toUpperCase() !== "I UNDERSTAND") {
+        return res.status(400).json({
+          error: "live execute confirmation phrase required",
+          code: "confirmation-required",
+          detail: 'Send body { confirm: "I UNDERSTAND", dryRun: false, ... } to perform real provider writes.',
+        });
+      }
+    }
+    try {
+      const result = await executePlan({ ...body.value, runId: id, dryRun });
+      const status = result.ok ? 200 : (result.status === "live_blocked" ? 409 : 502);
+      res.status(status).json(result);
+    } catch (err: any) {
+      res.status(500).json({ ok: false, status: "live_failed", error: String(err?.message ?? err) });
+    }
+  });
+
+  /**
+   * List provisioning steps + provider resources for a run. Used by the run
+   * detail page to render the live progress.
+   */
+  app.get("/api/live/runs/:id/steps", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: "bad run id", code: "bad-request" });
+    const [steps, resources] = await Promise.all([
+      storage.listProvisioningSteps(id),
+      storage.listProviderResources({ runId: id }),
+    ]);
+    res.json({
+      ok: true, runId: id,
+      steps: steps.map((s) => ({
+        ...s,
+        metadata: parseJSON<Record<string, unknown>>(s.metadata, {}),
+      })),
+      resources: resources.map((r) => ({
+        ...r,
+        metadata: parseJSON<Record<string, unknown>>(r.metadata, {}),
+      })),
+    });
+  });
+
   /* ------------------------------- helpers ------------------------------- */
   /** Generate a YAML preview of the CI workflow we would write. */
   app.post("/api/preview/ci", async (req, res) => {
@@ -994,6 +1110,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   return httpServer;
+}
+
+function parsePlanBody(raw: any): { ok: true; value: import("./live-provisioning").ProvisioningPlanInput } | { ok: false; error: string } {
+  const repo = String(raw?.repo ?? "").trim();
+  const branch = String(raw?.branch ?? "").trim() || "main";
+  const env = String(raw?.environment ?? "").trim() as "test" | "demo" | "deploy";
+  const hosting = String(raw?.hosting ?? "vercel").trim() as HostingProvider;
+  const database = String(raw?.database ?? "none").trim() as DatabaseProvider;
+  const projectName = String(raw?.projectName ?? raw?.name ?? "").trim() || (repo.split("/")[1] ?? "deploy");
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return { ok: false, error: "repo must be owner/name" };
+  if (!["test", "demo", "deploy"].includes(env)) return { ok: false, error: "environment must be test|demo|deploy" };
+  if (!["vercel", "railway", "none"].includes(hosting)) return { ok: false, error: "hosting must be vercel|railway|none" };
+  if (!["none", "neon", "prisma", "supabase", "railway"].includes(database)) {
+    return { ok: false, error: "database must be none|neon|prisma|supabase|railway" };
+  }
+  let existingSupabase: any = null;
+  if (raw?.existingSupabase && typeof raw.existingSupabase === "object") {
+    const url = String(raw.existingSupabase.url ?? "").trim();
+    const anonKey = String(raw.existingSupabase.anonKey ?? "").trim();
+    if (url && anonKey) {
+      existingSupabase = {
+        url, anonKey,
+        serviceRoleKey: typeof raw.existingSupabase.serviceRoleKey === "string" ? raw.existingSupabase.serviceRoleKey.trim() : null,
+        projectRef: typeof raw.existingSupabase.projectRef === "string" ? raw.existingSupabase.projectRef.trim() : null,
+      };
+    }
+  }
+  return {
+    ok: true,
+    value: { repo, branch, environment: env, hosting, database, projectName, existingSupabase },
+  };
 }
 
 function generateCiYaml(framework: string, providers: string[]): string {

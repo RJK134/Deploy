@@ -73,6 +73,14 @@ export default function Wizard() {
   const [providers, setProviders] = useState<string[]>(["github", "vercel", "neon", "prisma"]);
   const [revealValues, setRevealValues] = useState(false);
   const [liveMode, setLiveMode] = useState(false);
+  /* Hosting + database providers are explicit selections, distinct from the
+   * legacy provider tag list. The combined live orchestrator uses these. */
+  const [hosting, setHosting] = useState<"vercel" | "railway" | "none">("vercel");
+  const [database, setDatabase] = useState<"none" | "neon" | "prisma" | "supabase" | "railway">("neon");
+  const [supabaseExisting, setSupabaseExisting] = useState<{ url: string; anonKey: string; serviceRoleKey: string }>({
+    url: "", anonKey: "", serviceRoleKey: "",
+  });
+  const [useExistingSupabase, setUseExistingSupabase] = useState(false);
 
   const blueprintsQ = useQuery<any[]>({ queryKey: ["/api/blueprints"] });
 
@@ -152,6 +160,35 @@ export default function Wizard() {
     refetchInterval: false,
   });
 
+  /**
+   * Combined provisioning preflight (hosting + database). No provider writes,
+   * pure readiness with structured blockers from the new orchestrator.
+   */
+  const provisioningPreflight = useQuery<any>({
+    queryKey: ["/api/live/preflight", selectedRepo?.fullName, selectedBranch, environment, hosting, database, useExistingSupabase],
+    enabled: !!liveMode && !!selectedRepo && !!selectedBranch,
+    queryFn: async () => {
+      const body: any = {
+        repo: selectedRepo!.fullName,
+        branch: selectedBranch!,
+        environment,
+        hosting,
+        database,
+        projectName: selectedRepo!.name,
+      };
+      if (database === "supabase" && useExistingSupabase) {
+        body.existingSupabase = {
+          url: supabaseExisting.url,
+          anonKey: supabaseExisting.anonKey,
+          serviceRoleKey: supabaseExisting.serviceRoleKey || null,
+        };
+      }
+      const res = await apiRequest("POST", "/api/live/preflight", body);
+      return res.json();
+    },
+    refetchInterval: false,
+  });
+
   /* Project name derives from repo name. */
   const projectName = selectedRepo?.name ?? "—";
 
@@ -195,10 +232,31 @@ export default function Wizard() {
         envVars,
       });
       const runResp = await res.json();
-      /* Live runs require an explicit start-live POST to actually contact
-       * Vercel. The wizard does NOT trigger that automatically — the user
-       * confirms on the run detail page. This keeps the wizard's Run
-       * button safely non-mutating from the provider's POV. */
+      /* Live runs require an explicit execute POST with confirm to actually
+       * contact providers. The wizard runs the provisioning preflight here so
+       * the run detail page already shows readiness rows. */
+      try {
+        const planBody: any = {
+          repo: selectedRepo.fullName,
+          branch: selectedBranch,
+          environment,
+          hosting,
+          database,
+          projectName: selectedRepo.name,
+          dryRun: true,
+        };
+        if (database === "supabase" && useExistingSupabase) {
+          planBody.existingSupabase = {
+            url: supabaseExisting.url,
+            anonKey: supabaseExisting.anonKey,
+            serviceRoleKey: supabaseExisting.serviceRoleKey || null,
+          };
+        }
+        await apiRequest("POST", `/api/live/runs/${runResp.id}/execute`, planBody);
+      } catch (err) {
+        /* Best-effort — the run still exists, the user can retry from the run page. */
+        console.warn("[wizard] preflight execute failed", err);
+      }
       return runResp;
     },
     onSuccess: (data) => {
@@ -305,6 +363,14 @@ export default function Wizard() {
               value={providers}
               onChange={setProviders}
               recommended={blueprint?.providers ?? extras?.recommendedProviders ?? []}
+              hosting={hosting}
+              setHosting={setHosting}
+              database={database}
+              setDatabase={setDatabase}
+              useExistingSupabase={useExistingSupabase}
+              setUseExistingSupabase={setUseExistingSupabase}
+              supabaseExisting={supabaseExisting}
+              setSupabaseExisting={setSupabaseExisting}
             />
           )}
           {step === 4 && (
@@ -316,6 +382,8 @@ export default function Wizard() {
               environment={environment}
               blueprint={blueprint}
               providers={providers}
+              hosting={hosting}
+              database={database}
               envPreview={envPreview.data ?? []}
               ci={ciPreview.data ?? ""}
               revealValues={revealValues}
@@ -324,6 +392,8 @@ export default function Wizard() {
               setLiveMode={setLiveMode}
               livePreflight={livePreflight.data ?? null}
               livePreflightLoading={livePreflight.isLoading}
+              provisioningPreflight={provisioningPreflight.data ?? null}
+              provisioningPreflightLoading={provisioningPreflight.isLoading}
             />
           )}
         </CardContent>
@@ -476,49 +546,193 @@ function StepBlueprint({
 
 function StepProviders({
   value, onChange, recommended,
-}: { value: string[]; onChange: (v: string[]) => void; recommended: string[] }) {
-  const all = ["github", "vercel", "neon", "prisma", "railway"];
+  hosting, setHosting, database, setDatabase,
+  useExistingSupabase, setUseExistingSupabase, supabaseExisting, setSupabaseExisting,
+}: {
+  value: string[]; onChange: (v: string[]) => void; recommended: string[];
+  hosting: "vercel" | "railway" | "none";
+  setHosting: (h: "vercel" | "railway" | "none") => void;
+  database: "none" | "neon" | "prisma" | "supabase" | "railway";
+  setDatabase: (d: "none" | "neon" | "prisma" | "supabase" | "railway") => void;
+  useExistingSupabase: boolean;
+  setUseExistingSupabase: (v: boolean) => void;
+  supabaseExisting: { url: string; anonKey: string; serviceRoleKey: string };
+  setSupabaseExisting: (v: { url: string; anonKey: string; serviceRoleKey: string }) => void;
+}) {
+  const all = ["github", "vercel", "neon", "prisma", "railway", "supabase"];
+
+  /* Keep the legacy provider tag list in sync with the explicit hosting+db
+   * selections so downstream env/CI previews remain accurate. */
+  useEffect(() => {
+    const next = new Set<string>(["github"]);
+    if (hosting === "vercel") next.add("vercel");
+    if (hosting === "railway") next.add("railway");
+    if (database === "neon") next.add("neon");
+    if (database === "prisma") next.add("prisma");
+    if (database === "railway") next.add("railway");
+    if (database === "supabase") next.add("supabase");
+    onChange(Array.from(next));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hosting, database]);
+
   return (
-    <div>
-      <CardHeader className="px-0 pt-0">
-        <CardTitle className="text-sm">Step 4 — providers</CardTitle>
-      </CardHeader>
-      <p className="text-sm text-muted-foreground mb-4">
-        We pre-selected the providers your blueprint and detected stack need. Toggle any optional provider on or off.
-      </p>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {all.map((p) => {
-          const on = value.includes(p);
-          const isRecommended = recommended.includes(p);
-          return (
-            <label
-              key={p}
+    <div className="space-y-6">
+      <div>
+        <CardHeader className="px-0 pt-0">
+          <CardTitle className="text-sm">Step 4a — hosting provider</CardTitle>
+        </CardHeader>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {(["vercel", "railway", "none"] as const).map((h) => (
+            <button
+              key={h}
+              onClick={() => setHosting(h)}
               className={cn(
-                "flex items-center justify-between rounded-lg border p-4 cursor-pointer",
-                on ? "border-primary/60 bg-primary/5" : "border-border hover-elevate",
+                "rounded-lg border p-4 text-left transition-colors",
+                hosting === h ? "border-primary bg-primary/5" : "border-border hover-elevate",
               )}
-              data-testid={`provider-option-${p}`}
+              data-testid={`option-host-${h}`}
             >
-              <div className="flex items-center gap-3">
-                <ProviderIcon provider={p} className="h-5 w-5 text-foreground/80" />
-                <div>
-                  <div className="text-sm font-medium">{providerLabel(p)}</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    {p === "railway" ? "Optional. Manual CLI fallback." : isRecommended ? "Recommended for this stack." : "Optional"}
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2">
+                  {h !== "none" && <ProviderIcon provider={h} className="h-4 w-4" />}
+                  <span className="text-sm font-medium uppercase tracking-wide">{h}</span>
+                </div>
+                {hosting === h && <Check className="h-4 w-4 text-primary" />}
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                {h === "vercel" && "Real Vercel deploy via stored token + GitHub integration."}
+                {h === "railway" && "Real Railway project create via API token (no Git deploy until app installed)."}
+                {h === "none" && "No hosting provider — provision DB only."}
+              </p>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <CardHeader className="px-0 pt-0">
+          <CardTitle className="text-sm">Step 4b — database provider</CardTitle>
+        </CardHeader>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {(["none", "neon", "prisma", "supabase", "railway"] as const).map((d) => (
+            <button
+              key={d}
+              onClick={() => setDatabase(d)}
+              className={cn(
+                "rounded-lg border p-4 text-left transition-colors",
+                database === d ? "border-primary bg-primary/5" : "border-border hover-elevate",
+              )}
+              data-testid={`option-db-${d}`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2">
+                  {d !== "none" && <ProviderIcon provider={d} className="h-4 w-4" />}
+                  <span className="text-sm font-medium">{d === "none" ? "No database" : providerLabel(d)}</span>
+                </div>
+                {database === d && <Check className="h-4 w-4 text-primary" />}
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                {d === "none" && "Static or stateless app."}
+                {d === "neon" && "Branchable serverless Postgres. Real provisioning via Neon API."}
+                {d === "prisma" && "Prisma Postgres via Management API (requires existing Prisma project)."}
+                {d === "supabase" && "Simple alternative — Supabase project (create new or use existing)."}
+                {d === "railway" && "Provision a Railway project as DB host."}
+              </p>
+            </button>
+          ))}
+        </div>
+
+        {database === "supabase" && (
+          <div className="mt-4 rounded-md border border-border bg-card/40 p-4">
+            <label className="flex items-center gap-2 mb-3">
+              <input
+                type="checkbox"
+                checked={useExistingSupabase}
+                onChange={(e) => setUseExistingSupabase(e.target.checked)}
+                data-testid="checkbox-existing-supabase"
+              />
+              <span className="text-xs">Use an existing Supabase project (skip create)</span>
+            </label>
+            {useExistingSupabase && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                <label className="space-y-1">
+                  <span className="text-muted-foreground">Project URL</span>
+                  <input
+                    type="text"
+                    placeholder="https://abc.supabase.co"
+                    value={supabaseExisting.url}
+                    onChange={(e) => setSupabaseExisting({ ...supabaseExisting, url: e.target.value })}
+                    className="w-full rounded border border-border bg-card px-2 py-1.5 font-mono text-xs"
+                    data-testid="input-supabase-url"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-muted-foreground">Anon key (public)</span>
+                  <input
+                    type="password"
+                    value={supabaseExisting.anonKey}
+                    onChange={(e) => setSupabaseExisting({ ...supabaseExisting, anonKey: e.target.value })}
+                    className="w-full rounded border border-border bg-card px-2 py-1.5 font-mono text-xs"
+                    data-testid="input-supabase-anon"
+                  />
+                </label>
+                <label className="space-y-1 md:col-span-2">
+                  <span className="text-muted-foreground">Service role key (optional, server-only)</span>
+                  <input
+                    type="password"
+                    value={supabaseExisting.serviceRoleKey}
+                    onChange={(e) => setSupabaseExisting({ ...supabaseExisting, serviceRoleKey: e.target.value })}
+                    className="w-full rounded border border-border bg-card px-2 py-1.5 font-mono text-xs"
+                    data-testid="input-supabase-srv"
+                  />
+                </label>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <CardHeader className="px-0 pt-0">
+          <CardTitle className="text-sm">Step 4c — provider tags (legacy preview)</CardTitle>
+        </CardHeader>
+        <p className="text-xs text-muted-foreground mb-4">
+          These tags drive the env-var preview and CI workflow generator. They auto-sync with your hosting+database choices above.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {all.map((p) => {
+            const on = value.includes(p);
+            const isRecommended = recommended.includes(p);
+            return (
+              <label
+                key={p}
+                className={cn(
+                  "flex items-center justify-between rounded-lg border p-4 cursor-pointer",
+                  on ? "border-primary/60 bg-primary/5" : "border-border hover-elevate",
+                )}
+                data-testid={`provider-option-${p}`}
+              >
+                <div className="flex items-center gap-3">
+                  <ProviderIcon provider={p} className="h-5 w-5 text-foreground/80" />
+                  <div>
+                    <div className="text-sm font-medium">{providerLabel(p)}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {p === "railway" ? "Optional." : isRecommended ? "Recommended for this stack." : "Optional"}
+                    </div>
                   </div>
                 </div>
-              </div>
-              <Switch
-                checked={on}
-                onCheckedChange={(checked) => {
-                  if (checked) onChange(Array.from(new Set([...value, p])));
-                  else onChange(value.filter((x) => x !== p));
-                }}
-                data-testid={`switch-provider-${p}`}
-              />
-            </label>
-          );
-        })}
+                <Switch
+                  checked={on}
+                  onCheckedChange={(checked) => {
+                    if (checked) onChange(Array.from(new Set([...value, p])));
+                    else onChange(value.filter((x) => x !== p));
+                  }}
+                  data-testid={`switch-provider-${p}`}
+                />
+              </label>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -526,13 +740,21 @@ function StepProviders({
 
 function StepReview({
   projectName, repoFullName, branch, extras, environment, blueprint, providers,
+  hosting, database,
   envPreview, ci, revealValues, setRevealValues, liveMode, setLiveMode,
   livePreflight, livePreflightLoading,
+  provisioningPreflight, provisioningPreflightLoading,
 }: any) {
   const blockers: Array<{ code: string; message: string; remediation: string }> =
     Array.isArray(livePreflight?.blockers) ? livePreflight.blockers : [];
   const liveReady = !!livePreflight?.ready;
   const matched = livePreflight?.matchedProject ?? null;
+
+  const combinedBlockers: Array<{ code: string; message: string; remediation: string }> =
+    Array.isArray(provisioningPreflight?.blockers) ? provisioningPreflight.blockers : [];
+  const combinedSteps: Array<{ provider: string; action: string; label: string; status: string; blockerCode?: string | null; blockerMessage?: string | null; remediation?: string | null }> =
+    Array.isArray(provisioningPreflight?.steps) ? provisioningPreflight.steps : [];
+  const combinedReady = !!provisioningPreflight?.ready;
   return (
     <div className="space-y-6">
       <CardHeader className="px-0 pt-0">
@@ -639,6 +861,41 @@ function StepReview({
                 )}
               </div>
             </div>
+
+            {/* Combined provisioning readiness — DB + hosting + env injection. */}
+            <div className="mt-3 rounded-md border border-border bg-card/40 p-3">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-semibold text-foreground">
+                  Combined provisioning preflight ({hosting} · {database})
+                </div>
+                <Badge variant={combinedReady ? "default" : "outline"} className="text-[10px]">
+                  {provisioningPreflightLoading ? "checking…" : combinedReady ? "READY" : `${combinedBlockers.length} blocker${combinedBlockers.length === 1 ? "" : "s"}`}
+                </Badge>
+              </div>
+              {combinedSteps.length > 0 && (
+                <ul className="mt-2 space-y-1 text-[11px]">
+                  {combinedSteps.map((s, i) => (
+                    <li key={`${s.provider}-${s.action}-${i}`} className="flex items-center gap-2" data-testid={`step-${s.provider}-${s.action}`}>
+                      <span className={cn(
+                        "inline-flex h-4 px-1.5 items-center justify-center rounded text-[9px] font-mono uppercase",
+                        s.status === "validated_dry_run" ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                          : s.status === "blocked" ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                          : s.status === "failed" ? "bg-red-500/15 text-red-600 dark:text-red-400"
+                          : "bg-muted text-muted-foreground",
+                      )}>
+                        {s.status.replace("validated_dry_run", "ok")}
+                      </span>
+                      <ProviderIcon provider={s.provider} className="h-3 w-3 text-muted-foreground" />
+                      <span className="font-mono text-muted-foreground">{s.provider}</span>
+                      <span className="text-foreground/80">{s.label}</span>
+                      {s.blockerCode && (
+                        <span className="font-mono text-amber-600 dark:text-amber-400">→ {s.blockerCode}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -653,6 +910,8 @@ function StepReview({
           <KV k="Blueprint" v={blueprint?.name ?? "—"} testid="kv-blueprint" />
           <KV k="Build cmd" v={extras?.buildCommand ?? "—"} mono testid="kv-build" />
           <KV k="Output dir" v={extras?.outputDir ?? "—"} mono testid="kv-output" />
+          <KV k="Hosting" v={hosting} mono upper testid="kv-hosting" />
+          <KV k="Database" v={database} mono upper testid="kv-database" />
           <KV k="Mode" v={liveMode ? "LIVE" : "DRY-RUN"} mono testid="kv-mode" />
         </div>
 

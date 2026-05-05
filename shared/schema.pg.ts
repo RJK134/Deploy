@@ -196,6 +196,41 @@ export const githubRepos = pgTable("github_repos", {
   cachedAt: bigint("cached_at", { mode: "number" }).notNull(),
 });
 
+export const providerResources = pgTable("provider_resources", {
+  id: serial("id").primaryKey(),
+  provider: text("provider").notNull(),
+  resourceType: text("resource_type").notNull(),
+  externalId: text("external_id"),
+  name: text("name").notNull(),
+  environment: text("environment"),
+  url: text("url"),
+  maskedSecretRef: text("masked_secret_ref"),
+  status: text("status").notNull().default("planned"),
+  runId: integer("run_id"),
+  projectId: integer("project_id"),
+  metadata: text("metadata_json").notNull().default("{}"),
+  errorMessage: text("error_message"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+
+export const provisioningSteps = pgTable("provisioning_steps", {
+  id: serial("id").primaryKey(),
+  runId: integer("run_id").notNull(),
+  order: integer("order_idx").notNull(),
+  provider: text("provider").notNull(),
+  action: text("action").notNull(),
+  label: text("label").notNull(),
+  status: text("status").notNull().default("pending"),
+  blockerCode: text("blocker_code"),
+  blockerMessage: text("blocker_message"),
+  remediation: text("remediation"),
+  metadata: text("metadata_json").notNull().default("{}"),
+  log: text("log").notNull().default(""),
+  startedAt: bigint("started_at", { mode: "number" }),
+  finishedAt: bigint("finished_at", { mode: "number" }),
+});
+
 export const auditLogs = pgTable("audit_logs", {
   id: serial("id").primaryKey(),
   scope: text("scope").notNull(),

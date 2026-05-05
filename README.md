@@ -11,6 +11,19 @@ credentials and live mode are enabled.
 
 ## What's new
 
+- **Live provider provisioning** — real adapters for Neon, Prisma, Railway,
+  Supabase plus an extended Vercel adapter (project create/link, env-var
+  upsert, deployment trigger + poll) and a combined orchestrator at
+  `/api/live/preflight`, `/api/live/runs/:id/execute`, `/api/live/runs/:id/steps`.
+  Every external write is gated by `DEPLOYOPS_LIVE=1`, the connection's
+  `live_mode`, and `confirm: "I UNDERSTAND"`. Blocked paths return
+  `live_blocked` with structured `{code, message, remediation}` blockers.
+  See [docs/LIVE_PROVISIONING.md](docs/LIVE_PROVISIONING.md).
+- **Supabase as a simpler database option** — first-class provider in
+  Connection Center, the New Deploy wizard, and the orchestrator. Operators
+  either create a project via the Supabase Management API (token + org +
+  region + db_pass) or register an existing project by URL + anon key
+  (+ optional service role).
 - **Live Vercel deployments** — the New Deploy wizard can now create
   **real Vercel deployments** for selected GitHub repo + branch, not
   simulated ones. Live runs go through readiness gates (Vercel token

@@ -281,6 +281,39 @@ CREATE TABLE IF NOT EXISTS connection_events (
   meta_json TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS provider_resources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL,
+  resource_type TEXT NOT NULL,
+  external_id TEXT,
+  name TEXT NOT NULL,
+  environment TEXT,
+  url TEXT,
+  masked_secret_ref TEXT,
+  status TEXT NOT NULL DEFAULT 'planned',
+  run_id INTEGER,
+  project_id INTEGER,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  error_message TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provisioning_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL,
+  order_idx INTEGER NOT NULL,
+  provider TEXT NOT NULL,
+  action TEXT NOT NULL,
+  label TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  blocker_code TEXT,
+  blocker_message TEXT,
+  remediation TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  log TEXT NOT NULL DEFAULT '',
+  started_at INTEGER,
+  finished_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS audit_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   scope TEXT NOT NULL,
