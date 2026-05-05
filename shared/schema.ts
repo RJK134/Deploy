@@ -143,7 +143,15 @@ export const providers = sqliteTable("providers", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   key: text("key").notNull().unique(),             // github|vercel|neon|prisma|railway
   name: text("name").notNull(),
-  status: text("status").notNull().default("disconnected"), // connected|disconnected|partial
+  /* status values:
+   *   demo         — seeded mock state, no real provider connection exists
+   *   disconnected — no credentials configured
+   *   live_ready   — credentials validated, ready for live ops (no live op in flight)
+   *   connected    — actively connected and validated for live use
+   *   partial      — connected but missing some required scopes/capabilities
+   * Demo seed rows MUST NOT use `connected` — that label is reserved for
+   * a real provider_connection row backed by an encrypted token. */
+  status: text("status").notNull().default("disconnected"),
   mode: text("mode").notNull().default("dry-run"),          // dry-run|live
   notes: text("notes").notNull().default(""),
   capabilities: text("capabilities_json").notNull().default("[]"), // JSON string[]

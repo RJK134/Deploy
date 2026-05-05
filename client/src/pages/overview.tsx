@@ -27,12 +27,29 @@ export default function Overview() {
   const runs = useQuery<Run[]>({ queryKey: ["/api/runs"] });
 
   /* KPI counts treat dry-run validation and live success separately so the
-   * overview never implies a dry-run plan was a real deployment. */
+   * overview never implies a dry-run plan was a real deployment. Legacy
+   * `succeeded` rows are bucketed into dry-run (they only ever came from
+   * seed data; real successful deploys write `live_succeeded`). */
   const liveSucceeded = runs.data?.filter((r) => r.status === "live_succeeded").length ?? 0;
-  const dryRunValidated = runs.data?.filter((r) => r.status === "validated_dry_run" || r.status === "succeeded").length ?? 0;
+  const dryRunValidated = runs.data?.filter((r) => r.status === "validated_dry_run" || r.status === "succeeded" || r.status === "planned").length ?? 0;
   const running = runs.data?.filter((r) => r.status === "running" || r.status === "live_running" || r.status === "live_pending").length ?? 0;
   const failed = runs.data?.filter((r) => r.status === "failed" || r.status === "live_failed").length ?? 0;
   const blocked = runs.data?.filter((r) => r.status === "live_blocked").length ?? 0;
+
+  /* Active env counts only environments that actually have at least one
+   * deployed run. Showing a hardcoded "3 · test · demo · deploy" was
+   * misleading when the deploy column was empty. */
+  const envsWithRuns = new Set<string>();
+  for (const r of runs.data ?? []) envsWithRuns.add(r.environment);
+  const liveDeployedEnvs = new Set<string>();
+  for (const r of runs.data ?? []) {
+    if (r.status === "live_succeeded") liveDeployedEnvs.add(r.environment);
+  }
+  const envOrder = ["test", "demo", "deploy"] as const;
+  const activeEnvList = envOrder.filter((e) => envsWithRuns.has(e));
+  const activeEnvSub = activeEnvList.length === 0
+    ? "no runs yet"
+    : `${activeEnvList.join(" · ")}${liveDeployedEnvs.size === 0 ? " (dry-run only)" : ` · ${liveDeployedEnvs.size} live`}`;
 
   return (
     <PageShell
@@ -51,11 +68,21 @@ export default function Overview() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
         <Kpi icon={<Box className="h-4 w-4" />} label="Projects" value={projects.data?.length ?? 0} loading={projects.isLoading} />
         <Kpi icon={<Activity className="h-4 w-4" />} label="Runs · 7d" value={runs.data?.length ?? 0} loading={runs.isLoading} sub={`${liveSucceeded} live · ${dryRunValidated} dry-run · ${running} running · ${failed} failed${blocked ? ` · ${blocked} blocked` : ""}`} />
-        <Kpi icon={<ServerCog className="h-4 w-4" />} label="Providers connected"
-          value={`${providers.data?.filter((p) => p.status === "connected").length ?? 0}/${providers.data?.length ?? 0}`}
+        <Kpi icon={<ServerCog className="h-4 w-4" />} label="Providers · live"
+          value={`${providers.data?.filter((p) => p.status === "connected" || p.status === "live_ready").length ?? 0}/${providers.data?.length ?? 0}`}
+          sub={(() => {
+            const demo = providers.data?.filter((p) => p.status === "demo").length ?? 0;
+            const off  = providers.data?.filter((p) => p.status === "disconnected").length ?? 0;
+            const parts: string[] = [];
+            if (demo) parts.push(`${demo} demo`);
+            if (off)  parts.push(`${off} not connected`);
+            return parts.join(" · ") || "all live";
+          })()}
           loading={providers.isLoading} />
         <Kpi icon={<Globe2 className="h-4 w-4" />} label="Active env"
-          value="3" sub="test · demo · deploy" loading={false} />
+          value={activeEnvList.length}
+          sub={activeEnvSub}
+          loading={runs.isLoading} />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -127,14 +154,14 @@ export default function Overview() {
                           {(["test", "demo", "deploy"] as const).map((env) => {
                             const r = projectRuns.find((x) => x.environment === env);
                             return (
-                              <td key={env} className="px-3 py-3">
+                              <td key={env} className="px-3 py-3 whitespace-nowrap min-w-[140px]">
                                 {r ? (
-                                  <Link href={`/runs/${r.id}`} className="inline-flex items-center gap-2">
+                                  <Link href={`/runs/${r.id}`} className="inline-flex items-center gap-2 whitespace-nowrap">
                                     <StatusPill status={r.status as any} />
                                     <span className="text-[11px] text-muted-foreground">{fmtAgo(r.createdAt)}</span>
                                   </Link>
                                 ) : (
-                                  <span className="text-[11px] text-muted-foreground">— not deployed</span>
+                                  <span className="text-[11px] text-muted-foreground/70 italic whitespace-nowrap">not deployed</span>
                                 )}
                               </td>
                             );

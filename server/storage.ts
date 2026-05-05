@@ -357,27 +357,57 @@ export const storage = new DatabaseStorage();
 
 /* ---------------------------- seed default data --------------------------- */
 async function seed() {
+  /* Migrate legacy honesty issues from earlier seed versions:
+   *   - providers seeded as `connected` without a real provider_connection
+   *     row should be demoted to `demo` so the UI doesn't claim a live link.
+   *   - dry-run runs marked `succeeded` should be relabeled `validated_dry_run`
+   *     so the dashboard never implies a real deployment from a plan. */
+  try {
+    const allProvs = await storage.listProviders();
+    for (const p of allProvs) {
+      if (p.status !== "connected") continue;
+      const conn = await storage.getProviderConnection(p.key).catch(() => undefined);
+      const reallyConnected = !!conn && conn.status === "connected"
+        && conn.authMethod !== "none" && conn.authMethod !== "demo";
+      if (!reallyConnected) {
+        await storage.upsertProvider({
+          key: p.key, name: p.name, status: "demo", mode: p.mode,
+          notes: p.notes || `Demo seed only. No live ${p.name} credentials configured.`,
+          capabilities: p.capabilities,
+        } as InsertProvider);
+      }
+    }
+  } catch { /* migration is best-effort */ }
+  try {
+    const allRuns = await storage.listRuns();
+    for (const r of allRuns) {
+      if (r.mode === "dry-run" && r.status === "succeeded") {
+        await storage.updateRun(r.id, { status: "validated_dry_run" });
+      }
+    }
+  } catch { /* best-effort */ }
+
   const provs = await storage.listProviders();
   if (provs.length === 0) {
     const defaults: InsertProvider[] = [
       {
-        key: "github", name: "GitHub", status: "connected", mode: "dry-run",
-        notes: "Available via gh + git CLIs server-side. Read-only repo discovery is safe; write actions require explicit live mode.",
+        key: "github", name: "GitHub", status: "demo", mode: "dry-run",
+        notes: "Demo seed only. No live GitHub credentials configured — connect a token on the Providers page to enable real repo + PR actions.",
         capabilities: JSON.stringify(["list-repos", "scan-framework", "read-env-example", "open-pr", "trigger-workflow"]),
       },
       {
-        key: "vercel", name: "Vercel", status: "connected", mode: "dry-run",
-        notes: "Available via `npx vercel --token` server-side. Live deploys disabled until you flip the mode switch.",
+        key: "vercel", name: "Vercel", status: "demo", mode: "dry-run",
+        notes: "Demo seed only. No live Vercel token configured — add one on Providers to enable real deploys.",
         capabilities: JSON.stringify(["link-project", "set-env", "deploy", "promote", "domains"]),
       },
       {
-        key: "neon", name: "Neon Postgres", status: "connected", mode: "dry-run",
-        notes: "Connected via Pipedream. Default mode runs query plans against a planning sandbox; no schema mutations until live.",
+        key: "neon", name: "Neon Postgres", status: "demo", mode: "dry-run",
+        notes: "Demo seed only. No live Neon API key configured — add one on Providers for real branch/migration ops.",
         capabilities: JSON.stringify(["execute-query", "find-row", "insert-row", "branch-database"]),
       },
       {
-        key: "prisma", name: "Prisma Postgres", status: "connected", mode: "dry-run",
-        notes: "Prisma Management API connected. Can create databases, regions, connection strings — guarded behind live mode.",
+        key: "prisma", name: "Prisma Postgres", status: "demo", mode: "dry-run",
+        notes: "Demo seed only. No live Prisma Management API key configured — add one on Providers for real DB provisioning.",
         capabilities: JSON.stringify(["list-projects", "create-database", "create-conn-string", "list-regions"]),
       },
       {
@@ -505,12 +535,12 @@ async function seed() {
       accessMode: "public",
     } as InsertProject);
 
-    /* one demo run with stages already advanced */
+    /* one demo run with stages already advanced — dry-run plan, not a real deployment */
     const run = await storage.createRun({
       projectId: sample1.id,
       environment: "demo",
       mode: "dry-run",
-      status: "succeeded",
+      status: "validated_dry_run",
       providers: JSON.stringify(["github", "vercel", "neon", "prisma"]),
       envVars: JSON.stringify([
         { key: "DATABASE_URL", value: "postgresql://···@ep-demo-1234.neon.tech/db", source: "neon" },
