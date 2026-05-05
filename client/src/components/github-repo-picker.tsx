@@ -380,7 +380,7 @@ export function GithubRepoPicker({
               <SelectTrigger data-testid="select-owner"><SelectValue placeholder="Owner" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all" data-testid="option-owner-all">All owners</SelectItem>
-                {Array.from(new Set([...owners, "RJK134", "Future-Horizons-Education"])).sort().map((o) => (
+                {Array.from(new Set(owners)).sort().map((o) => (
                   <SelectItem key={o} value={o} data-testid={`option-owner-${o}`}>{o}</SelectItem>
                 ))}
               </SelectContent>
