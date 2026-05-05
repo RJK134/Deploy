@@ -98,7 +98,77 @@ function classifyGhError(stderr: string, exitCode: number): GhError {
   return err;
 }
 
+/**
+ * Token source for GitHub API calls. When set (via withGitHubToken or a call
+ * site override), the HTTP path is used directly with the token. Otherwise we
+ * fall back to the `gh` CLI which uses environment / `gh auth login` creds.
+ *
+ * The token string is held only in this module's memory for the duration of a
+ * single request handler invocation — the route layer must clear it after.
+ */
+let TOKEN_OVERRIDE: string | null = null;
+
+export function withGitHubToken<T>(token: string | null, fn: () => Promise<T>): Promise<T> {
+  const prev = TOKEN_OVERRIDE;
+  TOKEN_OVERRIDE = token;
+  return fn().finally(() => { TOKEN_OVERRIDE = prev; });
+}
+
+function activeToken(): string | null {
+  if (TOKEN_OVERRIDE && TOKEN_OVERRIDE.trim().length > 0) return TOKEN_OVERRIDE.trim();
+  /* Allow GITHUB_TOKEN env as second-class direct path. gh CLI also reads
+   * GITHUB_TOKEN, but using HTTP avoids requiring the CLI in the runtime. */
+  const envTok = (process.env.GITHUB_TOKEN ?? "").trim();
+  return envTok || null;
+}
+
+async function ghHttpApi<T>(path: string, token: string): Promise<T> {
+  const url = path.startsWith("http") ? path : `https://api.github.com${path.startsWith("/") ? path : `/${path}`}`;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20000);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "DeployOps-Console/1.0",
+      },
+      signal: ctrl.signal,
+    });
+  } catch (err: any) {
+    clearTimeout(t);
+    if (err?.name === "AbortError") throw new GhError("network", "GitHub HTTP request timed out", 504);
+    throw new GhError("network", `GitHub HTTP request failed: ${err?.message ?? err}`, 502);
+  }
+  clearTimeout(t);
+  const text = await res.text();
+  if (!res.ok) {
+    if (res.status === 401) throw new GhError("auth-missing", "GitHub authentication missing or invalid", 503, text.slice(0, 200));
+    if (res.status === 403 && /rate limit/i.test(text)) throw new GhError("rate-limit", "GitHub API rate limit exceeded", 429, text.slice(0, 200));
+    if (res.status === 403) throw new GhError("auth-missing", "GitHub token forbidden — check scopes", 503, text.slice(0, 200));
+    if (res.status === 404) throw new GhError("not-found", "Resource not found on GitHub", 404, text.slice(0, 200));
+    throw new GhError("unknown", `GitHub HTTP ${res.status}`, 503, text.slice(0, 200));
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new GhError("unknown", "GitHub returned non-JSON response", 500, text.slice(0, 200));
+  }
+}
+
 async function ghApi<T = unknown>(path: string, params: Record<string, string | number | undefined> = {}): Promise<T> {
+  const token = activeToken();
+  if (token) {
+    /* HTTP path — preferred when we have a token, no CLI dependency. */
+    let url = path;
+    const entries = Object.entries(params).filter(([, v]) => v !== undefined);
+    if (entries.length > 0) {
+      const sep = path.includes("?") ? "&" : "?";
+      url = path + sep + entries.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join("&");
+    }
+    return ghHttpApi<T>(url, token);
+  }
   const args = ["api", path, "-H", "Accept: application/vnd.github+json"];
   for (const [k, v] of Object.entries(params)) {
     if (v === undefined) continue;

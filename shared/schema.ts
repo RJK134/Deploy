@@ -123,6 +123,66 @@ export const insertProviderSchema = createInsertSchema(providers).omit({ id: tru
 export type InsertProvider = z.infer<typeof insertProviderSchema>;
 export type Provider = typeof providers.$inferSelect;
 
+/* ------------------------- provider connections -------------------------- */
+/**
+ * Provider connections — production-grade, per-provider auth state.
+ *
+ * One row per provider key (github|vercel|neon|prisma|railway). The encrypted
+ * access token (if any) is stored as `tokenCipher` (AES-256-GCM, base64).
+ * Plain tokens never touch disk and are never returned over the API.
+ *
+ * `authMethod`:
+ *   - `oauth`  — GitHub OAuth web flow exchange completed (authoritative)
+ *   - `pat`    — admin pasted a Personal Access Token / API key
+ *   - `env`    — derived from process.env (read-only marker, no token stored)
+ *   - `demo`   — mock connection for local/dev/demo, no secret material
+ *   - `none`   — placeholder (disconnected)
+ *
+ * `status`: connected | disconnected | invalid | expired | needs-setup
+ */
+export const providerConnections = sqliteTable("provider_connections", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  provider: text("provider").notNull().unique(),
+  status: text("status").notNull().default("disconnected"),
+  authMethod: text("auth_method").notNull().default("none"),
+  tokenCipher: text("token_cipher"),
+  tokenLast4: text("token_last4"),
+  refreshCipher: text("refresh_cipher"),
+  accountJson: text("account_json").notNull().default("{}"),
+  scopesJson: text("scopes_json").notNull().default("[]"),
+  errorsJson: text("errors_json").notNull().default("[]"),
+  liveMode: integer("live_mode", { mode: "boolean" }).notNull().default(false),
+  expiresAt: integer("expires_at"),
+  lastValidatedAt: integer("last_validated_at"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+export const insertProviderConnectionSchema = createInsertSchema(providerConnections).omit({
+  id: true, createdAt: true, updatedAt: true,
+});
+export type InsertProviderConnection = z.infer<typeof insertProviderConnectionSchema>;
+export type ProviderConnection = typeof providerConnections.$inferSelect;
+
+/**
+ * Connection events — per-connection audit trail.
+ * Records connect/disconnect/validate/rotate events without secret material.
+ */
+export const connectionEvents = sqliteTable("connection_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  connectionId: integer("connection_id"),
+  provider: text("provider").notNull(),
+  event: text("event").notNull(),
+  ok: integer("ok", { mode: "boolean" }).notNull().default(true),
+  detail: text("detail").notNull().default(""),
+  meta: text("meta_json").notNull().default("{}"),
+  createdAt: integer("created_at").notNull(),
+});
+export const insertConnectionEventSchema = createInsertSchema(connectionEvents).omit({
+  id: true, createdAt: true,
+});
+export type InsertConnectionEvent = z.infer<typeof insertConnectionEventSchema>;
+export type ConnectionEvent = typeof connectionEvents.$inferSelect;
+
 /* -------------------- Fix Bot: incidents / checks / etc -------------------- */
 /**
  * Fix Bot reliability domain.

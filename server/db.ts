@@ -243,6 +243,33 @@ CREATE TABLE IF NOT EXISTS github_repos (
   topics_json TEXT NOT NULL DEFAULT '[]',
   cached_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS provider_connections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'disconnected',
+  auth_method TEXT NOT NULL DEFAULT 'none',
+  token_cipher TEXT,
+  token_last4 TEXT,
+  refresh_cipher TEXT,
+  account_json TEXT NOT NULL DEFAULT '{}',
+  scopes_json TEXT NOT NULL DEFAULT '[]',
+  errors_json TEXT NOT NULL DEFAULT '[]',
+  live_mode INTEGER NOT NULL DEFAULT 0,
+  expires_at INTEGER,
+  last_validated_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS connection_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  connection_id INTEGER,
+  provider TEXT NOT NULL,
+  event TEXT NOT NULL,
+  ok INTEGER NOT NULL DEFAULT 1,
+  detail TEXT NOT NULL DEFAULT '',
+  meta_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   scope TEXT NOT NULL,

@@ -20,6 +20,7 @@ import Providers from "@/pages/providers";
 import Architecture from "@/pages/architecture";
 import Migration from "@/pages/migration";
 import FixBot from "@/pages/fixbot";
+import Readiness from "@/pages/readiness";
 
 function AppRouter() {
   return (
@@ -32,6 +33,7 @@ function AppRouter() {
       <Route path="/runs/:id" component={RunDetail} />
       <Route path="/access" component={Access} />
       <Route path="/providers" component={Providers} />
+      <Route path="/readiness" component={Readiness} />
       <Route path="/architecture" component={Architecture} />
       <Route path="/migration" component={Migration} />
       <Route path="/fixbot" component={FixBot} />

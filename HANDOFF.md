@@ -18,7 +18,8 @@ A demo-grade DeployOps Console for orchestrating GitHub deployments to Test → 
 | `#/blueprints` | `client/src/pages/blueprints.tsx` | Blueprint catalog cards |
 | `#/pipelines` | `client/src/pages/pipelines.tsx` | 8-stage pipeline anatomy reference |
 | `#/access` | `client/src/pages/access.tsx` | Per-project access mode (public/client/private) + URLs + auth checklist |
-| `#/providers` | `client/src/pages/providers.tsx` | Provider connection state + per-provider live mode toggle + CLI invocation examples |
+| `#/providers` | `client/src/pages/providers.tsx` | **Connection Center** — connect/reconnect/validate/disconnect per provider, OAuth + PAT entry, per-provider live toggle |
+| `#/readiness` | `client/src/pages/readiness.tsx` | Live readiness summary — what's blocking live deploys (encryption, scopes, errors, DEPLOYOPS_LIVE) |
 
 ## Backend
 - **Server entry**: `server/index.ts` (template default, unchanged).
@@ -40,6 +41,15 @@ A demo-grade DeployOps Console for orchestrating GitHub deployments to Test → 
 - `POST /api/runs/:id/advance` — advances next pending stage through the adapter
 - `GET/POST /api/blueprints`
 - `GET /api/providers`, `POST /api/providers/:key/mode` — toggle dry-run ↔ live
+- `GET /api/connections`, `GET /api/connections/:provider` — Connection Center state (no secrets)
+- `POST /api/connections/:provider/connect-token` — token entry; `{ token, confirm: "I UNDERSTAND" }`; encrypts + validates + stores
+- `POST /api/connections/:provider/validate` — re-validate stored token
+- `POST /api/connections/:provider/disconnect` — wipe ciphertext, mark disconnected
+- `POST /api/connections/:provider/live` — per-provider live toggle
+- `GET /api/auth/github/oauth/start`, `GET /api/auth/github/oauth/callback` — GitHub OAuth web flow (requires `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET`)
+- `GET /api/live/readiness` — global + per-provider readiness summary
+
+See [`docs/CONNECTIONS.md`](docs/CONNECTIONS.md) for the full connection/auth model.
 - `POST /api/preview/ci` — returns proposed `.github/workflows/deployops.yml`
 - `POST /api/preview/env` — returns env-var resolution plan with sources
 

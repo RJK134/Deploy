@@ -67,6 +67,8 @@ interface RepoPayload {
   owners?: string[];
   ownerErrors?: Array<{ owner: string; code: string; message: string }>;
   source?: "live" | "cache";
+  /** auth path used when source=live: "connection" | "env" | "cli". */
+  authSource?: "connection" | "env" | "cli";
   stale?: boolean;
   cachedAt?: number | null;
   warning?: string;
@@ -265,7 +267,7 @@ export function GithubRepoPicker({
             )}
             {reposQ.data?.source === "live" && (
               <Badge variant="outline" className="text-[10px] font-mono border-emerald-500/40 text-emerald-600 dark:text-emerald-400" data-testid="badge-source-live">
-                live
+                live{reposQ.data.authSource ? ` · ${reposQ.data.authSource}` : ""}
               </Badge>
             )}
             {reposQ.data?.source === "cache" && (
@@ -555,7 +557,7 @@ function RepoErrorState({
     code === "network"      ? "Could not reach GitHub" :
     "Could not load repositories";
   const hint =
-    code === "auth-missing" ? "Configure GITHUB_TOKEN (or run `gh auth login`) on the server, then refresh." :
+    code === "auth-missing" ? "Open Connection Center → Connect GitHub (OAuth or PAT). The wizard will use your stored token automatically once connected." :
     code === "rate-limit"   ? "Wait a few minutes and retry, or authenticate with a higher-limit token." :
     code === "not-found"    ? "Check the owner / repo name. The authenticated account may not have access." :
     code === "network"      ? "The server could not reach GitHub. Check connectivity and retry." :

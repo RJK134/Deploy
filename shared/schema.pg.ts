@@ -85,6 +85,35 @@ export const providers = pgTable("providers", {
   lastChecked: bigint("last_checked", { mode: "number" }),
 });
 
+export const providerConnections = pgTable("provider_connections", {
+  id: serial("id").primaryKey(),
+  provider: text("provider").notNull().unique(),
+  status: text("status").notNull().default("disconnected"),
+  authMethod: text("auth_method").notNull().default("none"),
+  tokenCipher: text("token_cipher"),
+  tokenLast4: text("token_last4"),
+  refreshCipher: text("refresh_cipher"),
+  accountJson: text("account_json").notNull().default("{}"),
+  scopesJson: text("scopes_json").notNull().default("[]"),
+  errorsJson: text("errors_json").notNull().default("[]"),
+  liveMode: boolean("live_mode").notNull().default(false),
+  expiresAt: bigint("expires_at", { mode: "number" }),
+  lastValidatedAt: bigint("last_validated_at", { mode: "number" }),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+
+export const connectionEvents = pgTable("connection_events", {
+  id: serial("id").primaryKey(),
+  connectionId: integer("connection_id"),
+  provider: text("provider").notNull(),
+  event: text("event").notNull(),
+  ok: boolean("ok").notNull().default(true),
+  detail: text("detail").notNull().default(""),
+  meta: text("meta_json").notNull().default("{}"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
 export const healthChecks = pgTable("health_checks", {
   id: serial("id").primaryKey(),
   key: text("key").notNull().unique(),

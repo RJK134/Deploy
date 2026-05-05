@@ -11,6 +11,15 @@ credentials and live mode are enabled.
 
 ## What's new
 
+- **Connection Center** (`/providers`) — production-grade auth layer for all
+  five providers. GitHub OAuth web flow + PAT fallback, token entry forms for
+  Vercel / Neon / Prisma / Railway, validation against each provider's API,
+  AES-256-GCM encryption at rest, per-provider live-mode toggles. Tokens are
+  never returned to the client. Demo connections (`token: demo`) work without
+  an encryption key for local development.
+- **Live Readiness page** (`/readiness`) — single page summarizing what is
+  blocking live deploys: encryption configured, `DEPLOYOPS_LIVE=1`, per-provider
+  scopes/errors/live-mode. Each blocker is actionable.
 - **Production architecture page** (`/architecture`) — visualises the Vercel +
   Neon control plane, lists required env vars, and reports the live backend.
 - **Migration plan page** (`/migration`) — interactive checklist for moving
@@ -89,12 +98,17 @@ surface the same information with the active runtime backend reported live.
 Live provider operations are intentionally disabled by default. To enable live
 orchestration:
 
-1. Set `DEPLOYOPS_LIVE=1` in the server env.
-2. Configure provider credentials server-side (`VERCEL_TOKEN`, `NEON_API_KEY`,
-   `GITHUB_TOKEN`, etc).
-3. Switch individual providers from dry-run to live on the Providers page.
-4. Implement the marked adapter TODOs in `server/providers.ts` and
+1. Set `DEPLOYOPS_SECRET_KEY` (or `TOKEN_ENCRYPTION_KEY`) on the server. This
+   is the master key used to encrypt provider tokens at rest. See
+   [`docs/CONNECTIONS.md`](docs/CONNECTIONS.md).
+2. Set `DEPLOYOPS_LIVE=1` in the server env (global gate).
+3. Open **Connection Center** and connect each provider you need
+   (GitHub OAuth or PAT, Vercel / Neon / Prisma / Railway tokens).
+4. Flip each provider's **Live** switch on its connection card.
+5. Implement the marked adapter TODOs in `server/providers.ts` and
    `server/fixbot.ts`.
+
+The **Live Readiness** page reflects each gate in real time.
 
 Even with all of the above, Fix Bot remediations require explicit approval
 unless the incident is at `safe-auto-fix` autonomy.

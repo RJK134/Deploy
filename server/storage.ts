@@ -1,7 +1,7 @@
 import {
   projects, runs, stages, blueprints, providers,
   healthChecks, incidents, diagnoses, remediations, auditLogs,
-  githubRepos,
+  githubRepos, providerConnections, connectionEvents,
   type Project, type InsertProject,
   type Run, type InsertRun,
   type Stage, type InsertStage,
@@ -13,6 +13,8 @@ import {
   type Remediation, type InsertRemediation,
   type AuditLog, type InsertAuditLog,
   type InsertGithubRepo, type GithubRepoRow,
+  type ProviderConnection, type InsertProviderConnection,
+  type ConnectionEvent, type InsertConnectionEvent,
 } from "@shared/schema";
 import { eq, asc, desc } from "drizzle-orm";
 import { db, dbInfo } from "./db";
@@ -77,6 +79,16 @@ export interface IStorage {
   listGithubRepos(): Promise<GithubRepoRow[]>;
   upsertGithubRepo(r: InsertGithubRepo): Promise<GithubRepoRow>;
   pruneGithubRepos(keepFullNames: string[]): Promise<number>;
+
+  /* provider connections */
+  listProviderConnections(): Promise<ProviderConnection[]>;
+  getProviderConnection(provider: string): Promise<ProviderConnection | undefined>;
+  upsertProviderConnection(c: InsertProviderConnection): Promise<ProviderConnection>;
+  deleteProviderConnection(provider: string): Promise<void>;
+
+  /* connection events */
+  listConnectionEvents(provider?: string, limit?: number): Promise<ConnectionEvent[]>;
+  createConnectionEvent(e: InsertConnectionEvent): Promise<ConnectionEvent>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -256,6 +268,40 @@ export class DatabaseStorage implements IStorage {
       }
     }
     return removed;
+  }
+
+  /* ----- provider connections ----- */
+  async listProviderConnections(): Promise<ProviderConnection[]> {
+    return db.select().from(providerConnections).orderBy(asc(providerConnections.id)).all();
+  }
+  async getProviderConnection(provider: string): Promise<ProviderConnection | undefined> {
+    return db.select().from(providerConnections).where(eq(providerConnections.provider, provider)).get();
+  }
+  async upsertProviderConnection(c: InsertProviderConnection): Promise<ProviderConnection> {
+    const now = Date.now();
+    const existing = await this.getProviderConnection(c.provider);
+    if (existing) {
+      return db.update(providerConnections)
+        .set({ ...c, updatedAt: now } as any)
+        .where(eq(providerConnections.id, existing.id))
+        .returning().get();
+    }
+    return db.insert(providerConnections)
+      .values({ ...c, createdAt: now, updatedAt: now } as any)
+      .returning().get();
+  }
+  async deleteProviderConnection(provider: string): Promise<void> {
+    db.delete(providerConnections).where(eq(providerConnections.provider, provider)).run();
+  }
+
+  /* ----- connection events ----- */
+  async listConnectionEvents(provider?: string, limit = 100): Promise<ConnectionEvent[]> {
+    const all = db.select().from(connectionEvents).orderBy(desc(connectionEvents.createdAt)).all() as ConnectionEvent[];
+    const filtered = provider ? all.filter((e) => e.provider === provider) : all;
+    return filtered.slice(0, limit);
+  }
+  async createConnectionEvent(e: InsertConnectionEvent): Promise<ConnectionEvent> {
+    return db.insert(connectionEvents).values({ ...e, createdAt: Date.now() } as any).returning().get();
   }
 }
 
