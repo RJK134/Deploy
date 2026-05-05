@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   GitBranch, Search, Lock, Globe, Star, AlertTriangle, RefreshCw,
   Check, Github, Sparkles, Database, FileCode, Container, FlaskConical,
+  Loader2, ExternalLink, KeyRound,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -65,14 +66,25 @@ interface RepoPayload {
   repos: GhRepoSummary[];
   total: number;
   owners?: string[];
+  ownersTried?: string[];
   ownerErrors?: Array<{ owner: string; code: string; message: string }>;
   source?: "live" | "cache";
-  /** auth path used when source=live: "connection" | "env" | "cli". */
-  authSource?: "connection" | "env" | "cli";
+  /** auth path used when source=live: "connection" | "env" | "cli" | "cache". */
+  authSource?: "connection" | "env" | "cli" | "cache";
+  connectedAccount?: { login: string; name: string | null } | null;
   stale?: boolean;
   cachedAt?: number | null;
   warning?: string;
   liveError?: { code: string; message: string };
+}
+interface DiagPayload {
+  ok: boolean;
+  authSource: "connection" | "env" | "cli" | null;
+  hasStoredConnection: boolean;
+  hasEnvToken: boolean;
+  ghCliFallbackEnabled: boolean;
+  viewer: { login: string; name: string | null } | null;
+  viewerError: { code: string; message: string } | null;
 }
 interface BranchPayload {
   ok: boolean;
@@ -167,6 +179,8 @@ export function GithubRepoPicker({
   /* extraOwner is the owner currently being aggregated from the manual search box. */
   const [extraOwner, setExtraOwner] = useState<string>("");
 
+  const queryClient = useQueryClient();
+
   const reposQ = useQuery<RepoPayload, Error>({
     queryKey: ["/api/github/repos", extraOwner || "default"],
     queryFn: () => {
@@ -175,6 +189,16 @@ export function GithubRepoPicker({
         : "/api/github/repos";
       return fetchOrThrow<RepoPayload>(url);
     },
+  });
+
+  /* Diagnostic — surfaces whether a stored connection / env / CLI token is
+   * available before the user opens the connect form. Refetches on demand
+   * after a successful connect. */
+  const diagQ = useQuery<DiagPayload, Error>({
+    queryKey: ["/api/github/diag"],
+    queryFn: () => fetchOrThrow<DiagPayload>("/api/github/diag"),
+    /* light staleTime so refresh after connect is fast */
+    staleTime: 5_000,
   });
 
   const repos = reposQ.data?.repos ?? [];
@@ -253,8 +277,29 @@ export function GithubRepoPicker({
 
   const reposError = reposQ.error as (Error & { code?: string; status?: number }) | null;
 
+  /** When live load returned a cache fallback, treat as needing connect if no auth at all. */
+  const cacheFromAuthMissing = reposQ.data?.source === "cache" && reposQ.data?.liveError?.code === "auth-missing";
+  const needsConnect = !!reposError && (reposError.code === "auth-missing" || reposError.code === "forbidden-scope")
+    || cacheFromAuthMissing
+    || (diagQ.data && diagQ.data.authSource === null && (reposQ.data?.repos.length ?? 0) === 0);
+
+  const onConnected = async () => {
+    /* Refresh both diag and repo list on successful connect. */
+    await Promise.all([diagQ.refetch(), reposQ.refetch()]);
+    queryClient.invalidateQueries({ queryKey: ["/api/connections"] });
+  };
+
   return (
     <div className="space-y-5" data-testid="github-repo-picker">
+      {needsConnect && (
+        <GithubConnectCard
+          diag={diagQ.data ?? null}
+          reposError={reposError}
+          cacheFromAuthMissing={cacheFromAuthMissing}
+          onConnected={onConnected}
+        />
+      )}
+
       <div>
         <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
           <div className="flex items-center gap-2 flex-wrap">
@@ -273,6 +318,11 @@ export function GithubRepoPicker({
             {reposQ.data?.source === "cache" && (
               <Badge variant="outline" className="text-[10px] font-mono border-amber-500/40 text-amber-600 dark:text-amber-400" data-testid="badge-source-cache">
                 cached{reposQ.data.cachedAt ? ` · ${timeAgoMs(reposQ.data.cachedAt)}` : ""}
+              </Badge>
+            )}
+            {reposQ.data?.connectedAccount?.login && (
+              <Badge variant="outline" className="text-[10px] font-mono" data-testid="badge-connected-account">
+                @{reposQ.data.connectedAccount.login}
               </Badge>
             )}
           </div>
@@ -316,11 +366,21 @@ export function GithubRepoPicker({
             />
           </div>
           <div className="md:col-span-2">
-            <Select value={effectiveOwnerFilter} onValueChange={setOwnerFilter}>
+            <Select
+              value={effectiveOwnerFilter}
+              onValueChange={(v) => {
+                setOwnerFilter(v);
+                /* Quick-jump to known owners that aren't yet aggregated. */
+                if (v !== "all" && !owners.includes(v)) {
+                  setManualOwner(v);
+                  setExtraOwner(v);
+                }
+              }}
+            >
               <SelectTrigger data-testid="select-owner"><SelectValue placeholder="Owner" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all" data-testid="option-owner-all">All owners</SelectItem>
-                {owners.map((o) => (
+                {Array.from(new Set([...owners, "RJK134", "Future-Horizons-Education"])).sort().map((o) => (
                   <SelectItem key={o} value={o} data-testid={`option-owner-${o}`}>{o}</SelectItem>
                 ))}
               </SelectContent>
@@ -551,16 +611,18 @@ function RepoErrorState({
 }: { error: Error & { code?: string; status?: number }; onRetry: () => void }) {
   const code = error.code ?? "unknown";
   const title =
-    code === "auth-missing" ? "GitHub authentication unavailable" :
-    code === "rate-limit"   ? "GitHub API rate limit reached" :
-    code === "not-found"    ? "GitHub user / repos not found" :
-    code === "network"      ? "Could not reach GitHub" :
+    code === "auth-missing"    ? "Connect GitHub to load repositories" :
+    code === "forbidden-scope" ? "GitHub token missing required scopes" :
+    code === "rate-limit"      ? "GitHub API rate limit reached" :
+    code === "not-found"       ? "GitHub user / repos not found" :
+    code === "network"         ? "Could not reach GitHub" :
     "Could not load repositories";
   const hint =
-    code === "auth-missing" ? "Open Connection Center → Connect GitHub (OAuth or PAT). The wizard will use your stored token automatically once connected." :
-    code === "rate-limit"   ? "Wait a few minutes and retry, or authenticate with a higher-limit token." :
-    code === "not-found"    ? "Check the owner / repo name. The authenticated account may not have access." :
-    code === "network"      ? "The server could not reach GitHub. Check connectivity and retry." :
+    code === "auth-missing"    ? "Use the connect form above to paste a Personal Access Token, then retry. The wizard will use your stored token automatically once connected." :
+    code === "forbidden-scope" ? "Re-issue your token with these scopes: repo (private repos), read:org (org/private org repos), workflow (CI writes). Then re-connect." :
+    code === "rate-limit"      ? "Wait a few minutes and retry, or authenticate with a higher-limit token." :
+    code === "not-found"       ? "Check the owner / repo name. The authenticated account may not have access." :
+    code === "network"         ? "The server could not reach GitHub. Check connectivity and retry." :
     "Try refreshing. If it persists, check the server logs for the request id.";
   return (
     <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4" data-testid="repos-error">
@@ -698,6 +760,152 @@ function DKV({ k, v, mono, testid }: { k: string; v: string; mono?: boolean; tes
       <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{k}</span>
       <span className={cn("text-[11px]", mono && "font-mono")}>{v}</span>
     </div>
+  );
+}
+
+function GithubConnectCard({
+  diag, reposError, cacheFromAuthMissing, onConnected,
+}: {
+  diag: DiagPayload | null;
+  reposError: (Error & { code?: string }) | null;
+  cacheFromAuthMissing: boolean;
+  onConnected: () => Promise<void> | void;
+}) {
+  const [token, setToken] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [warn, setWarn] = useState<string | null>(null);
+
+  const code = reposError?.code ?? (cacheFromAuthMissing ? "auth-missing" : null);
+  const headline =
+    code === "forbidden-scope"
+      ? "Connected GitHub token cannot list repos"
+      : "Connect GitHub to load repositories";
+  const subtext =
+    code === "forbidden-scope"
+      ? "Re-issue a token that includes repo (for private repos) and read:org (for org/private-org repos), then paste it below."
+      : "Paste a GitHub Personal Access Token (PAT) — it's encrypted server-side and never sent back to the browser.";
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setErr(null); setWarn(null); setBusy(true);
+    try {
+      const res = await fetch("/api/connections/github/connect-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: token.trim(), confirm: confirm.trim() }),
+      });
+      const text = await res.text();
+      let body: any = null;
+      try { body = JSON.parse(text); } catch { /* keep text */ }
+      if (!res.ok) {
+        const msg = body?.error || text || `HTTP ${res.status}`;
+        const detail = body?.detail ? ` — ${body.detail}` : "";
+        if (body?.code === "confirmation-required") {
+          setErr(`Confirmation required. Type I UNDERSTAND in the confirmation box, then re-submit.`);
+        } else if (body?.code === "setup-required") {
+          setErr(`${msg}${detail}`);
+        } else if (body?.validation && Array.isArray(body.validation.errors)) {
+          setErr(`Token rejected by GitHub: ${body.validation.errors.join("; ")}`);
+        } else {
+          setErr(`${msg}${detail}`);
+        }
+        return;
+      }
+      const v = body?.validation;
+      if (v && Array.isArray(v.warnings) && v.warnings.length > 0) {
+        setWarn(`Connected, but: ${v.warnings.join("; ")}`);
+      }
+      setToken(""); setConfirm("");
+      await onConnected();
+    } catch (e: any) {
+      setErr(`Network error: ${e?.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const tokenUrl = "https://github.com/settings/tokens/new?scopes=repo,read:org,workflow&description=DeployOps%20Console";
+
+  return (
+    <Card className="border-amber-500/40" data-testid="github-connect-card">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm flex items-center gap-2">
+          <KeyRound className="h-4 w-4 text-amber-500" />
+          {headline}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-xs text-muted-foreground">{subtext}</p>
+        {diag && diag.viewer && (
+          <div className="text-[11px] text-muted-foreground" data-testid="connect-current-account">
+            Current connection: <span className="font-mono">@{diag.viewer.login}</span>
+            {diag.authSource && <> ({diag.authSource})</>}
+          </div>
+        )}
+        {diag?.viewerError && (
+          <div className="text-[11px] text-amber-600 dark:text-amber-400" data-testid="connect-current-error">
+            Stored token is rejected by GitHub: {diag.viewerError.code}: {diag.viewerError.message}
+          </div>
+        )}
+        <form onSubmit={submit} className="space-y-2" data-testid="connect-form">
+          <div>
+            <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">
+              GitHub Personal Access Token
+            </label>
+            <Input
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="ghp_… or github_pat_…"
+              disabled={busy}
+              data-testid="input-github-token"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] uppercase tracking-wide text-muted-foreground block mb-1">
+              Confirm save (type <span className="font-mono">I UNDERSTAND</span>)
+            </label>
+            <Input
+              type="text"
+              autoComplete="off"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              placeholder="I UNDERSTAND"
+              disabled={busy}
+              data-testid="input-github-confirm"
+            />
+          </div>
+          {err && (
+            <div className="text-[11px] text-red-500 dark:text-red-400" data-testid="connect-error">{err}</div>
+          )}
+          {warn && (
+            <div className="text-[11px] text-amber-600 dark:text-amber-400" data-testid="connect-warning">{warn}</div>
+          )}
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button type="submit" size="sm" disabled={busy || !token.trim()} data-testid="button-connect-github">
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <KeyRound className="h-3.5 w-3.5 mr-1" />}
+              {busy ? "Connecting…" : "Connect & validate"}
+            </Button>
+            <a
+              href={tokenUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-[11px] text-muted-foreground underline inline-flex items-center gap-1"
+              data-testid="link-create-token"
+            >
+              Create a PAT on GitHub <ExternalLink className="h-3 w-3" />
+            </a>
+            <span className="text-[11px] text-muted-foreground">
+              Required scopes: <code className="font-mono">repo</code>, <code className="font-mono">read:org</code>, <code className="font-mono">workflow</code>
+            </span>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
   );
 }
 

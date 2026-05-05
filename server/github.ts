@@ -11,13 +11,16 @@
  * `not-found`, `network`, `unknown`).
  */
 import { spawn } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 export class GhError extends Error {
-  code: "auth-missing" | "rate-limit" | "not-found" | "network" | "unknown";
+  code: "auth-missing" | "rate-limit" | "not-found" | "network" | "unknown" | "forbidden-scope";
   status: number;
   detail?: string;
   /** Exit code from the underlying CLI process, when applicable. Never used as HTTP status. */
   exitCode?: number;
+  /** Optional owner this error pertains to (when GhError comes from a per-owner call). */
+  owner?: string;
   constructor(code: GhError["code"], message: string, status = 500, detail?: string) {
     super(message);
     this.code = code;
@@ -99,27 +102,46 @@ function classifyGhError(stderr: string, exitCode: number): GhError {
 }
 
 /**
- * Token source for GitHub API calls. When set (via withGitHubToken or a call
- * site override), the HTTP path is used directly with the token. Otherwise we
- * fall back to the `gh` CLI which uses environment / `gh auth login` creds.
+ * Token source for GitHub API calls. When set (via withGitHubToken), the HTTP
+ * path is used directly with the token. Otherwise we fall back to env vars and
+ * lastly the `gh` CLI which uses `gh auth login` creds.
  *
- * The token string is held only in this module's memory for the duration of a
- * single request handler invocation — the route layer must clear it after.
+ * Backed by AsyncLocalStorage so concurrent requests with different tokens do
+ * not stomp on each other. The token string is never logged or echoed.
  */
-let TOKEN_OVERRIDE: string | null = null;
+interface GhCallContext {
+  token: string | null;
+  source: AuthSource;
+}
+const ghCtx = new AsyncLocalStorage<GhCallContext>();
 
-export function withGitHubToken<T>(token: string | null, fn: () => Promise<T>): Promise<T> {
-  const prev = TOKEN_OVERRIDE;
-  TOKEN_OVERRIDE = token;
-  return fn().finally(() => { TOKEN_OVERRIDE = prev; });
+export type AuthSource = "connection" | "env" | "cli" | "none";
+
+export function withGitHubToken<T>(
+  token: string | null,
+  fn: () => Promise<T>,
+  source: AuthSource = token ? "connection" : "none",
+): Promise<T> {
+  return ghCtx.run({ token: token && token.trim() ? token.trim() : null, source }, fn);
 }
 
-function activeToken(): string | null {
-  if (TOKEN_OVERRIDE && TOKEN_OVERRIDE.trim().length > 0) return TOKEN_OVERRIDE.trim();
-  /* Allow GITHUB_TOKEN env as second-class direct path. gh CLI also reads
-   * GITHUB_TOKEN, but using HTTP avoids requiring the CLI in the runtime. */
-  const envTok = (process.env.GITHUB_TOKEN ?? "").trim();
-  return envTok || null;
+/**
+ * Returns the active token (if any) and the source label.
+ * Order: explicit connection (via withGitHubToken) → env GITHUB_TOKEN/GH_TOKEN →
+ * none (caller will fall through to `gh` CLI).
+ */
+function activeAuth(): { token: string | null; source: AuthSource } {
+  const ctx = ghCtx.getStore();
+  if (ctx?.token) return { token: ctx.token, source: ctx.source === "none" ? "connection" : ctx.source };
+  /* Env vars (GITHUB_TOKEN preferred, GH_TOKEN as fallback for parity with gh CLI). */
+  const envTok = ((process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN) ?? "").trim();
+  if (envTok) return { token: envTok, source: "env" };
+  return { token: null, source: "cli" };
+}
+
+/** Public — lets the route layer surface which auth source served the request. */
+export function currentAuthSource(): AuthSource {
+  return activeAuth().source;
 }
 
 async function ghHttpApi<T>(path: string, token: string): Promise<T> {
@@ -144,23 +166,36 @@ async function ghHttpApi<T>(path: string, token: string): Promise<T> {
   clearTimeout(t);
   const text = await res.text();
   if (!res.ok) {
-    if (res.status === 401) throw new GhError("auth-missing", "GitHub authentication missing or invalid", 503, text.slice(0, 200));
+    if (res.status === 401) throw new GhError("auth-missing", "GitHub authentication invalid or expired", 401, text.slice(0, 200));
     if (res.status === 403 && /rate limit/i.test(text)) throw new GhError("rate-limit", "GitHub API rate limit exceeded", 429, text.slice(0, 200));
-    if (res.status === 403) throw new GhError("auth-missing", "GitHub token forbidden — check scopes", 503, text.slice(0, 200));
+    if (res.status === 403) {
+      throw new GhError("forbidden-scope", "GitHub token forbidden — likely missing scopes (repo / read:org)", 403, text.slice(0, 200));
+    }
     if (res.status === 404) throw new GhError("not-found", "Resource not found on GitHub", 404, text.slice(0, 200));
-    throw new GhError("unknown", `GitHub HTTP ${res.status}`, 503, text.slice(0, 200));
+    throw new GhError("unknown", `GitHub HTTP ${res.status}`, 502, text.slice(0, 200));
   }
   try {
     return JSON.parse(text) as T;
   } catch {
-    throw new GhError("unknown", "GitHub returned non-JSON response", 500, text.slice(0, 200));
+    throw new GhError("unknown", "GitHub returned non-JSON response", 502, text.slice(0, 200));
   }
 }
 
+/**
+ * Whether the `gh` CLI fallback should be attempted. Controlled by
+ * DEPLOYOPS_DISABLE_GH_CLI=1 (set in deployed previews where the CLI's auth
+ * is unstable / expiring). Default: enabled in dev, disabled when explicitly
+ * turned off.
+ */
+function ghCliEnabled(): boolean {
+  const v = (process.env.DEPLOYOPS_DISABLE_GH_CLI ?? "").trim();
+  return v !== "1" && v.toLowerCase() !== "true";
+}
+
 async function ghApi<T = unknown>(path: string, params: Record<string, string | number | undefined> = {}): Promise<T> {
-  const token = activeToken();
+  const { token } = activeAuth();
   if (token) {
-    /* HTTP path — preferred when we have a token, no CLI dependency. */
+    /* HTTP path — preferred whenever we have any token, no CLI dependency. */
     let url = path;
     const entries = Object.entries(params).filter(([, v]) => v !== undefined);
     if (entries.length > 0) {
@@ -168,6 +203,17 @@ async function ghApi<T = unknown>(path: string, params: Record<string, string | 
       url = path + sep + entries.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join("&");
     }
     return ghHttpApi<T>(url, token);
+  }
+  /* No HTTP token — fall back to gh CLI if allowed. The deployed preview
+   * server cannot rely on `gh auth login` because its token expires; in that
+   * environment the operator should connect a stored PAT via the UI. */
+  if (!ghCliEnabled()) {
+    throw new GhError(
+      "auth-missing",
+      "No GitHub credential available — connect GitHub in the wizard or set GITHUB_TOKEN",
+      401,
+      "stored connection token + GITHUB_TOKEN env both unset; gh CLI fallback disabled",
+    );
   }
   const args = ["api", path, "-H", "Accept: application/vnd.github+json"];
   for (const [k, v] of Object.entries(params)) {
@@ -179,7 +225,7 @@ async function ghApi<T = unknown>(path: string, params: Record<string, string | 
   try {
     return JSON.parse(stdout) as T;
   } catch {
-    throw new GhError("unknown", "GitHub returned non-JSON response", 500, stdout.slice(0, 200));
+    throw new GhError("unknown", "GitHub returned non-JSON response", 502, stdout.slice(0, 200));
   }
 }
 
@@ -348,18 +394,33 @@ async function ghListOrgRepos(org: string): Promise<GhRepoSummary[]> {
 
 /**
  * List repos for an arbitrary owner (user or org) — tries org first, falls back to user.
- * Returns empty array on not-found; rethrows other errors.
+ * Returns empty array on not-found; rethrows other errors (with owner annotated).
  */
 export async function ghListOwnerRepos(owner: string): Promise<GhRepoSummary[]> {
+  let orgErr: GhError | null = null;
   try {
     return await ghListOrgRepos(owner);
   } catch (err) {
-    if (!(err instanceof GhError) || err.code !== "not-found") throw err;
+    if (!(err instanceof GhError)) throw err;
+    if (err.code !== "not-found" && err.code !== "forbidden-scope") {
+      err.owner = owner;
+      throw err;
+    }
+    orgErr = err;
   }
   try {
     return await ghListUserRepos(owner);
   } catch (err) {
-    if (err instanceof GhError && err.code === "not-found") return [];
+    if (err instanceof GhError) {
+      err.owner = owner;
+      if (err.code === "not-found") {
+        /* If org probe was forbidden but user probe says not-found, the owner
+         * exists as an org we can't see — surface as forbidden-scope so the UI
+         * can tell the user to grant read:org. */
+        if (orgErr && orgErr.code === "forbidden-scope") throw orgErr;
+        return [];
+      }
+    }
     throw err;
   }
 }
@@ -442,9 +503,13 @@ export async function ghListRepos(opts: ListReposOptions = {}): Promise<ListRepo
         if (!seen.has(r.fullName)) { seen.set(r.fullName, r); added++; }
       }
       if (added > 0 || repos.length > 0) result.owners.push(owner);
+      else result.ownerErrors.push({ owner, code: "empty", message: `no repositories visible for ${owner} (may be empty or token lacks access)` });
     } catch (err) {
       if (err instanceof GhError) {
-        result.ownerErrors.push({ owner, code: err.code, message: err.message });
+        const message = err.code === "forbidden-scope"
+          ? `GitHub token connected but cannot list repos for owner ${owner}; required scopes: repo for private repos, read:org for org/private org repos.`
+          : err.message;
+        result.ownerErrors.push({ owner, code: err.code, message });
       } else {
         result.ownerErrors.push({ owner, code: "unknown", message: String(err) });
       }
