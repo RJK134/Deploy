@@ -6,7 +6,9 @@ const base64ThirtyTwoBytes = z
   .refine(
     (value) => {
       try {
-        return Buffer.from(value, "base64").length === 32;
+        // atob is available in both Node.js 16+ and the Edge runtime,
+        // unlike Buffer which is Node-only and unavailable in Next.js middleware.
+        return atob(value).length === 32;
       } catch {
         return false;
       }

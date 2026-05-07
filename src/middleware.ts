@@ -23,7 +23,7 @@ export default auth((req) => {
   if (!isLoggedIn) {
     const url = req.nextUrl.clone();
     url.pathname = "/signin";
-    url.searchParams.set("callbackUrl", pathname);
+    url.searchParams.set("callbackUrl", pathname + req.nextUrl.search);
     return NextResponse.redirect(url);
   }
 
