@@ -32,3 +32,6 @@ pnpm-debug.log*
 
 # drizzle
 drizzle/meta/
+
+# claude code harness — local permissions only; intentional artifacts (prompts) ARE tracked
+.claude/settings.local.json
