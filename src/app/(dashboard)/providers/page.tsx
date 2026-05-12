@@ -1,23 +1,35 @@
 import { PageShell } from "@/components/page-shell";
-import { PlaceholderCard } from "@/components/placeholder-card";
+import { listCredentials } from "@/lib/db/credentials";
 
-export default function ProvidersPage() {
+import {
+  CredentialCard,
+  PROVIDER_META,
+} from "./_components/credential-card";
+
+export const dynamic = "force-dynamic";
+
+export default async function ProvidersPage() {
+  const credentials = await listCredentials();
+  const byKind = new Map(credentials.map((c) => [c.kind, c]));
+
   return (
     <PageShell
       eyebrow="Operations"
       title="Connection Center"
-      description="Connect the operator's GitHub App, Vercel team, and Neon project. Credentials are encrypted at rest with ENCRYPTION_KEY."
+      description="Operator credentials for GitHub, Vercel, and Neon. Encrypted at rest with the server-side ENCRYPTION_KEY. Plaintext never leaves the server — only the last four characters and the connection state are exposed to the UI."
     >
-      <PlaceholderCard
-        title="Coming in Session 2"
-        description="Provider connection forms (GitHub App install URL, Vercel token paste, Neon API key paste) live here. This session only validates that ENCRYPTION_KEY is configured — the encryption helper itself ships in Session 2."
-        bullets={[
-          "GitHub App install with read-only repo and pull-request scopes",
-          "Vercel token with hobby/team selector",
-          "Neon API key with project selector",
-          "Connection state tracked in provider_credentials",
-        ]}
-      />
+      <section
+        aria-label="Provider credentials"
+        className="flex max-w-3xl flex-col gap-4"
+      >
+        {PROVIDER_META.map((meta) => (
+          <CredentialCard
+            key={meta.kind}
+            meta={meta}
+            view={byKind.get(meta.kind) ?? null}
+          />
+        ))}
+      </section>
     </PageShell>
   );
 }

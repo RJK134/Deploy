@@ -16,11 +16,21 @@ const base64ThirtyTwoBytes = z
     { message: "must be base64 encoding of exactly 32 bytes" },
   );
 
+const postgresUrl = z
+  .string()
+  .url("must be a valid Postgres connection URL")
+  .refine(
+    (value) =>
+      value.startsWith("postgres://") || value.startsWith("postgresql://"),
+    {
+      message:
+        "must use the postgres:// or postgresql:// scheme (Neon pooled URL)",
+    },
+  );
+
 const envSchema = z.object({
-  DATABASE_URL: z.string().url("must be a valid Postgres connection URL"),
-  NEXTAUTH_SECRET: z
-    .string()
-    .min(16, "must be at least 16 characters; generate with `openssl rand -base64 32`"),
+  DATABASE_URL: postgresUrl,
+  NEXTAUTH_SECRET: base64ThirtyTwoBytes,
   NEXTAUTH_URL: z.string().url("must be a valid URL, e.g. http://localhost:3000"),
   GITHUB_OAUTH_CLIENT_ID: z.string().min(1),
   GITHUB_OAUTH_CLIENT_SECRET: z.string().min(1),

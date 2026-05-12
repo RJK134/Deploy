@@ -1,6 +1,10 @@
+import NextAuth from "next-auth";
 import { NextResponse } from "next/server";
 
-import { auth } from "@/lib/auth";
+import { authConfig } from "@/lib/auth.config";
+
+// Edge-safe NextAuth instance: built from authConfig only, no DB imports.
+const { auth } = NextAuth(authConfig);
 
 const PUBLIC_PATHS = ["/signin"];
 
