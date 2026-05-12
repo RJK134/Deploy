@@ -18,12 +18,24 @@ export const users = pgTable("users", {
     .notNull(),
 });
 
+export const PROVIDER_KINDS = ["github_pat", "vercel", "neon"] as const;
+export type ProviderKind = (typeof PROVIDER_KINDS)[number];
+
+export const CONNECTION_STATES = [
+  "pending",
+  "verified",
+  "failed",
+] as const;
+export type ConnectionState = (typeof CONNECTION_STATES)[number];
+
 export const providerCredentials = pgTable("provider_credentials", {
   id: uuid("id").primaryKey().defaultRandom(),
-  kind: text("kind", { enum: ["github_app", "vercel", "neon"] }).notNull(),
+  kind: text("kind", { enum: PROVIDER_KINDS }).notNull().unique(),
   ciphertext: text("ciphertext").notNull(),
   lastFour: text("last_four").notNull(),
-  connectionState: text("connection_state").notNull().default("pending"),
+  connectionState: text("connection_state", { enum: CONNECTION_STATES })
+    .notNull()
+    .default("pending"),
   lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()

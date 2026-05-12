@@ -8,21 +8,38 @@ import {
 
 import { PageShell } from "@/components/page-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { listCredentials } from "@/lib/db/credentials";
+
+export const dynamic = "force-dynamic";
 
 interface Kpi {
   label: string;
   icon: LucideIcon;
+  value: string;
   hint: string;
 }
 
-const kpis: Kpi[] = [
-  { label: "Projects", icon: Boxes, hint: "Connect a repo to start" },
-  { label: "Runs · 7d", icon: Activity, hint: "No runs recorded yet" },
-  { label: "Providers · live", icon: Plug, hint: "GitHub, Vercel, Neon — pending" },
-  { label: "Active env", icon: Layers, hint: "test · demo · deploy" },
-];
+export default async function OverviewPage() {
+  const credentials = await listCredentials();
+  const verifiedCount = credentials.filter(
+    (c) => c.connectionState === "verified",
+  ).length;
 
-export default function OverviewPage() {
+  const kpis: Kpi[] = [
+    { label: "Projects", icon: Boxes, value: "—", hint: "Connect a repo to start" },
+    { label: "Runs · 7d", icon: Activity, value: "—", hint: "No runs recorded yet" },
+    {
+      label: "Providers · live",
+      icon: Plug,
+      value: verifiedCount > 0 ? String(verifiedCount) : "—",
+      hint:
+        verifiedCount === 0
+          ? "GitHub, Vercel, Neon — pending"
+          : `${verifiedCount} of 3 verified`,
+    },
+    { label: "Active env", icon: Layers, value: "—", hint: "test · demo · deploy" },
+  ];
+
   return (
     <PageShell
       eyebrow="Workspace"
@@ -43,7 +60,7 @@ export default function OverviewPage() {
               </CardHeader>
               <CardContent className="space-y-1">
                 <p className="text-3xl font-semibold tracking-tight tabular-nums text-foreground">
-                  —
+                  {kpi.value}
                 </p>
                 <p className="text-xs text-muted-foreground">{kpi.hint}</p>
               </CardContent>
@@ -73,8 +90,9 @@ export default function OverviewPage() {
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
-              Coming soon — Session 2 introduces the Connection Center for
-              GitHub App, Vercel, and Neon credentials.
+              {verifiedCount === 0
+                ? "Connect a GitHub PAT, Vercel token, and Neon API key in the Connection Center to begin."
+                : `${verifiedCount} of 3 providers verified. Visit the Connection Center to manage credentials.`}
             </p>
           </CardContent>
         </Card>

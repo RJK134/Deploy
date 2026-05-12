@@ -23,6 +23,17 @@ export default function RootLayout({
       suppressHydrationWarning
       className={`${GeistSans.variable} ${GeistMono.variable}`}
     >
+      <head>
+        {/* Pre-hydration: set html.dark to match prefers-color-scheme so
+            users don't see a single-frame flash. Spec opted out of
+            localStorage, so the only signal is the media query. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "(function(){try{var l=window.matchMedia('(prefers-color-scheme: light)').matches;if(!l)document.documentElement.classList.add('dark');}catch(e){}})();",
+          }}
+        />
+      </head>
       <body className="min-h-screen bg-background font-sans text-foreground antialiased">
         <ThemeProvider>{children}</ThemeProvider>
       </body>

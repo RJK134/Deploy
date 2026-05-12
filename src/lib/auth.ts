@@ -1,45 +1,43 @@
 import NextAuth from "next-auth";
-import GitHub from "next-auth/providers/github";
 
-import { env } from "@/lib/env";
+import { authConfig } from "@/lib/auth.config";
+import { upsertOperator } from "@/lib/db/users";
 
+const baseSignIn = authConfig.callbacks?.signIn;
+
+// Full Node-side auth handler: wraps the edge-safe config and extends
+// signIn to upsert the operator row after the allowlist check passes.
 export const {
   handlers,
   auth,
   signIn,
   signOut,
 } = NextAuth({
-  providers: [
-    GitHub({
-      clientId: env.GITHUB_OAUTH_CLIENT_ID,
-      clientSecret: env.GITHUB_OAUTH_CLIENT_SECRET,
-    }),
-  ],
-  session: { strategy: "jwt" },
-  secret: env.NEXTAUTH_SECRET,
-  trustHost: true,
-  pages: {
-    signIn: "/signin",
-    error: "/signin",
-  },
+  ...authConfig,
   callbacks: {
-    async signIn({ profile }) {
-      const incomingEmail = profile?.email?.toLowerCase().trim();
-      const allowed = env.ALLOWED_EMAIL.toLowerCase().trim();
-      if (!incomingEmail || incomingEmail !== allowed) {
-        return false;
-      }
+    ...authConfig.callbacks,
+    async signIn(params) {
+      const allowed = baseSignIn
+        ? await baseSignIn(params)
+        : true;
+      if (!allowed) return false;
+
+      const email = params.profile?.email?.toLowerCase().trim();
+      if (!email) return false;
+
+      const avatar =
+        typeof params.profile?.avatar_url === "string"
+          ? params.profile.avatar_url
+          : null;
+      await upsertOperator({
+        email,
+        name:
+          typeof params.profile?.name === "string"
+            ? params.profile.name
+            : null,
+        image: avatar,
+      });
       return true;
-    },
-    async jwt({ token, profile }) {
-      if (profile?.email) token.email = profile.email;
-      if (profile?.name) token.name = profile.name;
-      return token;
-    },
-    async session({ session, token }) {
-      if (token.email && session.user) session.user.email = token.email;
-      if (token.name && session.user) session.user.name = token.name as string;
-      return session;
     },
   },
 });

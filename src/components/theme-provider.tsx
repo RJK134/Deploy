@@ -19,14 +19,17 @@ function applyThemeClass(theme: Theme) {
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  // Default theme is dark; respect prefers-color-scheme on first mount.
+  // Default theme is dark unless the user actively prefers light. The
+  // inline no-flash script in layout.tsx has already set the html.dark
+  // class to match before hydration; this useState just keeps the React
+  // tree in sync.
   const [theme, setThemeState] = React.useState<Theme>("dark");
 
   React.useEffect(() => {
-    const prefersDark =
+    const prefersLight =
       typeof window !== "undefined" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const initial: Theme = prefersDark ? "dark" : "light";
+      window.matchMedia("(prefers-color-scheme: light)").matches;
+    const initial: Theme = prefersLight ? "light" : "dark";
     setThemeState(initial);
     applyThemeClass(initial);
   }, []);
