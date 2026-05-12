@@ -151,7 +151,7 @@ export const PROVIDER_META: ProviderMeta[] = [
       href: "https://github.com/settings/personal-access-tokens/new",
       label: "Generate a token",
     },
-    placeholder: "github_pat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    placeholder: "Paste your fine-grained personal access token here",
   },
   {
     kind: "vercel",
@@ -162,7 +162,7 @@ export const PROVIDER_META: ProviderMeta[] = [
       href: "https://vercel.com/account/tokens",
       label: "Create a token",
     },
-    placeholder: "vc_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    placeholder: "Paste your Vercel access token here",
   },
   {
     kind: "neon",
@@ -173,6 +173,6 @@ export const PROVIDER_META: ProviderMeta[] = [
       href: "https://console.neon.tech/app/settings/api-keys",
       label: "Issue an API key",
     },
-    placeholder: "napi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    placeholder: "Paste your Neon API key here",
   },
 ];

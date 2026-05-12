@@ -11,7 +11,9 @@ describe("crypto AES-256-GCM", () => {
   });
 
   it("round-trips ASCII", async () => {
-    const plain = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+    // Generic 40-char fixture; avoids matching real-provider token regexes
+    // so secret scanners (GitGuardian etc.) don't false-positive.
+    const plain = "fixture-AbCdEfGhIjKlMnOpQrStUvWxYz01-test";
     expect(await decrypt(await encrypt(plain))).toEqual(plain);
   });
 
