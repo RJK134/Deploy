@@ -26,6 +26,20 @@ const postgresUrl = z
       message:
         "must use the postgres:// or postgresql:// scheme (Neon pooled URL)",
     },
+  )
+  .refine(
+    (value) => {
+      try {
+        const firstLabel = new URL(value).hostname.split(".")[0] ?? "";
+        return firstLabel !== "ep-example" && firstLabel !== "ep-example-pooler";
+      } catch {
+        return false;
+      }
+    },
+    {
+      message:
+        "must not use Neon's documentation placeholder host (ep-example / ep-example-pooler); use your project's connection string from the Neon dashboard",
+    },
   );
 
 const envSchema = z.object({
