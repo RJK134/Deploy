@@ -10,6 +10,7 @@ import { PageShell } from "@/components/page-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { listCredentials } from "@/lib/db/credentials";
 import { countProjects } from "@/lib/db/projects";
+import { countRunsSince } from "@/lib/db/runs";
 
 export const dynamic = "force-dynamic";
 
@@ -20,10 +21,14 @@ interface Kpi {
   hint: string;
 }
 
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
 export default async function OverviewPage() {
-  const [credentials, projectCount] = await Promise.all([
+  const sevenDaysAgo = new Date(Date.now() - SEVEN_DAYS_MS);
+  const [credentials, projectCount, runs7d] = await Promise.all([
     listCredentials(),
     countProjects(),
+    countRunsSince(sevenDaysAgo),
   ]);
   const verifiedCount = credentials.filter(
     (c) => c.connectionState === "verified",
@@ -39,7 +44,12 @@ export default async function OverviewPage() {
           ? "Connect a repo to start"
           : `${projectCount} repo${projectCount === 1 ? "" : "s"} tracked`,
     },
-    { label: "Runs · 7d", icon: Activity, value: "—", hint: "No runs recorded yet" },
+    {
+      label: "Runs · 7d",
+      icon: Activity,
+      value: runs7d > 0 ? String(runs7d) : "—",
+      hint: runs7d === 0 ? "No runs recorded yet" : `${runs7d} in the last week`,
+    },
     {
       label: "Providers · live",
       icon: Plug,

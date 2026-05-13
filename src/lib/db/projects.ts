@@ -11,6 +11,7 @@ export interface ProjectView {
   slug: string;
   githubOwner: string;
   githubRepo: string;
+  blueprintId: string | null;
   defaultBranch: string | null;
   framework: string | null;
   createdAt: Date;
@@ -27,12 +28,33 @@ export async function listProjects(): Promise<ProjectView[]> {
       slug: projects.slug,
       githubOwner: projects.githubOwner,
       githubRepo: projects.githubRepo,
+      blueprintId: projects.blueprintId,
       defaultBranch: projects.defaultBranch,
       framework: projects.framework,
       createdAt: projects.createdAt,
     })
     .from(projects)
     .orderBy(projects.createdAt);
+}
+
+export async function getProjectById(
+  id: string,
+): Promise<ProjectView | null> {
+  const rows = await db
+    .select({
+      id: projects.id,
+      slug: projects.slug,
+      githubOwner: projects.githubOwner,
+      githubRepo: projects.githubRepo,
+      blueprintId: projects.blueprintId,
+      defaultBranch: projects.defaultBranch,
+      framework: projects.framework,
+      createdAt: projects.createdAt,
+    })
+    .from(projects)
+    .where(eq(projects.id, id))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 export async function countProjects(): Promise<number> {
@@ -46,6 +68,8 @@ export async function addProject(args: {
   owner: string;
   repo: string;
   defaultBranch?: string | null;
+  framework?: string | null;
+  blueprintId?: string | null;
   actor: string;
 }): Promise<ProjectView> {
   const owner = args.owner.trim();
@@ -60,7 +84,8 @@ export async function addProject(args: {
       githubOwner: owner,
       githubRepo: repo,
       defaultBranch: args.defaultBranch ?? null,
-      framework: null,
+      framework: args.framework ?? null,
+      blueprintId: args.blueprintId ?? null,
     })
     .onConflictDoUpdate({
       target: projects.slug,
@@ -75,6 +100,7 @@ export async function addProject(args: {
       slug: projects.slug,
       githubOwner: projects.githubOwner,
       githubRepo: projects.githubRepo,
+      blueprintId: projects.blueprintId,
       defaultBranch: projects.defaultBranch,
       framework: projects.framework,
       createdAt: projects.createdAt,
@@ -87,6 +113,25 @@ export async function addProject(args: {
     target: row.slug,
   });
   return row;
+}
+
+export async function setProjectBlueprint(args: {
+  projectId: string;
+  blueprintId: string | null;
+  actor: string;
+}): Promise<void> {
+  const rows = await db
+    .update(projects)
+    .set({ blueprintId: args.blueprintId })
+    .where(eq(projects.id, args.projectId))
+    .returning({ slug: projects.slug });
+  if (rows.length === 0) throw new Error("project not found");
+  await recordAudit({
+    actor: args.actor,
+    action: args.blueprintId ? "project.blueprint.set" : "project.blueprint.cleared",
+    target: rows[0].slug,
+    metadata: args.blueprintId ? { blueprintId: args.blueprintId } : null,
+  });
 }
 
 export async function deleteProjectById(
