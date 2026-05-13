@@ -2,7 +2,6 @@
 
 import { revalidatePath } from "next/cache";
 
-import { auth } from "@/lib/auth";
 import {
   deleteCredential,
   getCredentialPlaintext,
@@ -14,6 +13,7 @@ import { probeGitHub } from "@/lib/providers/github";
 import { probeNeon } from "@/lib/providers/neon";
 import type { ProbeResult } from "@/lib/providers/probe";
 import { probeVercel } from "@/lib/providers/vercel";
+import { requireActorEmail } from "@/lib/server-actor";
 
 function assertKind(value: FormDataEntryValue | null): ProviderKind {
   if (typeof value !== "string") throw new Error("missing provider kind");
@@ -21,13 +21,6 @@ function assertKind(value: FormDataEntryValue | null): ProviderKind {
     throw new Error(`unknown provider kind: ${value}`);
   }
   return value as ProviderKind;
-}
-
-async function actor(): Promise<string> {
-  const session = await auth();
-  const email = session?.user?.email;
-  if (!email) throw new Error("not authenticated");
-  return email.toLowerCase();
 }
 
 async function probeForKind(
@@ -50,7 +43,7 @@ export async function saveCredentialAction(formData: FormData): Promise<void> {
   if (typeof plaintext !== "string" || !plaintext.trim()) {
     throw new Error("credential value is required");
   }
-  await setCredential(kind, plaintext, await actor());
+  await setCredential(kind, plaintext, await requireActorEmail());
   revalidatePath("/providers");
   revalidatePath("/");
 }
@@ -62,7 +55,7 @@ export async function verifyCredentialAction(
   const plaintext = await getCredentialPlaintext(kind);
   if (!plaintext) throw new Error("no credential to verify");
   const result = await probeForKind(kind, plaintext);
-  await markVerified(kind, result.ok, await actor());
+  await markVerified(kind, result.ok, await requireActorEmail());
   revalidatePath("/providers");
   revalidatePath("/");
 }
@@ -71,7 +64,7 @@ export async function disconnectCredentialAction(
   formData: FormData,
 ): Promise<void> {
   const kind = assertKind(formData.get("kind"));
-  await deleteCredential(kind, await actor());
+  await deleteCredential(kind, await requireActorEmail());
   revalidatePath("/providers");
   revalidatePath("/projects");
   revalidatePath("/");

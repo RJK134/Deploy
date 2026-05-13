@@ -2,17 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 
-import { auth } from "@/lib/auth";
 import { getCredentialPlaintext } from "@/lib/db/credentials";
 import { addProject, deleteProjectById } from "@/lib/db/projects";
 import { probeGitHubRepo } from "@/lib/providers/github";
-
-async function actor(): Promise<string> {
-  const session = await auth();
-  const email = session?.user?.email;
-  if (!email) throw new Error("not authenticated");
-  return email.toLowerCase();
-}
+import { requireActorEmail } from "@/lib/server-actor";
 
 function parseRepoInput(input: string): { owner: string; repo: string } {
   const trimmed = input.trim();
@@ -35,7 +28,10 @@ function parseRepoInput(input: string): { owner: string; repo: string } {
   }
   const [owner, repo] = parts;
   const cleanRepo = repo.replace(/\.git$/i, "");
-  if (!/^[A-Za-z0-9-]+$/.test(owner) || !/^[A-Za-z0-9._-]+$/.test(cleanRepo)) {
+  // Owner allows underscores to cover GitHub Enterprise Managed User
+  // (EMU) names such as `IDP-USERNAME_SHORT-CODE`. Repo allows dots too
+  // (e.g. `my.repo`). Both stay tight enough to reject shell metacharacters.
+  if (!/^[A-Za-z0-9_-]+$/.test(owner) || !/^[A-Za-z0-9._-]+$/.test(cleanRepo)) {
     throw new Error("owner or repo contains invalid characters");
   }
   return { owner, repo: cleanRepo };
@@ -65,7 +61,7 @@ export async function addProjectAction(formData: FormData): Promise<void> {
     owner,
     repo,
     defaultBranch,
-    actor: await actor(),
+    actor: await requireActorEmail(),
   });
   revalidatePath("/projects");
   revalidatePath("/");
@@ -74,7 +70,7 @@ export async function addProjectAction(formData: FormData): Promise<void> {
 export async function removeProjectAction(formData: FormData): Promise<void> {
   const id = formData.get("id");
   if (typeof id !== "string" || !id) throw new Error("project id is required");
-  await deleteProjectById(id, await actor());
+  await deleteProjectById(id, await requireActorEmail());
   revalidatePath("/projects");
   revalidatePath("/");
 }
