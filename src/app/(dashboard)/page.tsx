@@ -9,6 +9,7 @@ import {
 import { PageShell } from "@/components/page-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { listCredentials } from "@/lib/db/credentials";
+import { countProjects } from "@/lib/db/projects";
 
 export const dynamic = "force-dynamic";
 
@@ -20,13 +21,24 @@ interface Kpi {
 }
 
 export default async function OverviewPage() {
-  const credentials = await listCredentials();
+  const [credentials, projectCount] = await Promise.all([
+    listCredentials(),
+    countProjects(),
+  ]);
   const verifiedCount = credentials.filter(
     (c) => c.connectionState === "verified",
   ).length;
 
   const kpis: Kpi[] = [
-    { label: "Projects", icon: Boxes, value: "—", hint: "Connect a repo to start" },
+    {
+      label: "Projects",
+      icon: Boxes,
+      value: projectCount > 0 ? String(projectCount) : "—",
+      hint:
+        projectCount === 0
+          ? "Connect a repo to start"
+          : `${projectCount} repo${projectCount === 1 ? "" : "s"} tracked`,
+    },
     { label: "Runs · 7d", icon: Activity, value: "—", hint: "No runs recorded yet" },
     {
       label: "Providers · live",
