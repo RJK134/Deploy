@@ -1,0 +1,106 @@
+import "server-only";
+
+import { eq, sql } from "drizzle-orm";
+
+import { db } from "@/lib/db/client";
+import { recordAudit } from "@/lib/db/audit";
+import { projects } from "@/lib/db/schema";
+
+export interface ProjectView {
+  id: string;
+  slug: string;
+  githubOwner: string;
+  githubRepo: string;
+  defaultBranch: string | null;
+  framework: string | null;
+  createdAt: Date;
+}
+
+function slugFor(owner: string, repo: string): string {
+  return `${owner.toLowerCase()}/${repo.toLowerCase()}`;
+}
+
+export async function listProjects(): Promise<ProjectView[]> {
+  return db
+    .select({
+      id: projects.id,
+      slug: projects.slug,
+      githubOwner: projects.githubOwner,
+      githubRepo: projects.githubRepo,
+      defaultBranch: projects.defaultBranch,
+      framework: projects.framework,
+      createdAt: projects.createdAt,
+    })
+    .from(projects)
+    .orderBy(projects.createdAt);
+}
+
+export async function countProjects(): Promise<number> {
+  const rows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(projects);
+  return rows[0]?.count ?? 0;
+}
+
+export async function addProject(args: {
+  owner: string;
+  repo: string;
+  defaultBranch?: string | null;
+  actor: string;
+}): Promise<ProjectView> {
+  const owner = args.owner.trim();
+  const repo = args.repo.trim();
+  if (!owner || !repo) throw new Error("owner and repo are required");
+  const slug = slugFor(owner, repo);
+
+  const inserted = await db
+    .insert(projects)
+    .values({
+      slug,
+      githubOwner: owner,
+      githubRepo: repo,
+      defaultBranch: args.defaultBranch ?? null,
+      framework: null,
+    })
+    .onConflictDoUpdate({
+      target: projects.slug,
+      set: {
+        githubOwner: sql`excluded.github_owner`,
+        githubRepo: sql`excluded.github_repo`,
+        defaultBranch: sql`excluded.default_branch`,
+      },
+    })
+    .returning({
+      id: projects.id,
+      slug: projects.slug,
+      githubOwner: projects.githubOwner,
+      githubRepo: projects.githubRepo,
+      defaultBranch: projects.defaultBranch,
+      framework: projects.framework,
+      createdAt: projects.createdAt,
+    });
+
+  const row = inserted[0];
+  await recordAudit({
+    actor: args.actor,
+    action: "project.added",
+    target: row.slug,
+  });
+  return row;
+}
+
+export async function deleteProjectById(
+  id: string,
+  actor: string,
+): Promise<void> {
+  const rows = await db
+    .delete(projects)
+    .where(eq(projects.id, id))
+    .returning({ slug: projects.slug });
+  if (rows.length === 0) return;
+  await recordAudit({
+    actor,
+    action: "project.removed",
+    target: rows[0].slug,
+  });
+}

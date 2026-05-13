@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { pingDatabase } from "@/lib/db/client";
 import { listCredentials } from "@/lib/db/credentials";
+import { countProjects } from "@/lib/db/projects";
 import type { ProviderKind } from "@/lib/db/schema";
 
 export const dynamic = "force-dynamic";
@@ -29,21 +30,30 @@ async function providerHealth(): Promise<Record<string, ProviderHealth>> {
       if (label) initial[label] = row.connectionState;
     }
   } catch {
-    // If the providers table read fails, leave the map as all-absent rather
-    // than failing the whole health check. The DB ping below is what gates
-    // the HTTP status.
+    // Leave the map all-absent rather than failing the whole probe.
   }
   return initial;
 }
 
+async function projectCount(): Promise<number> {
+  try {
+    return await countProjects();
+  } catch {
+    return 0;
+  }
+}
+
 export async function GET() {
   const dbUp = await pingDatabase();
-  const providers = dbUp ? await providerHealth() : null;
   const commit = process.env.VERCEL_GIT_COMMIT_SHA ?? "local";
 
   if (dbUp) {
+    const [providers, projects] = await Promise.all([
+      providerHealth(),
+      projectCount(),
+    ]);
     return NextResponse.json(
-      { ok: true, db: "up", providers, commit },
+      { ok: true, db: "up", providers, projects, commit },
       { status: 200 },
     );
   }
@@ -52,9 +62,9 @@ export async function GET() {
       ok: false,
       db: "down",
       providers: { github: "absent", vercel: "absent", neon: "absent" },
+      projects: 0,
       commit,
     },
     { status: 503 },
   );
 }
-
