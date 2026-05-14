@@ -9,7 +9,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { isLiveMode } from "@/lib/env";
 import { listBlueprints } from "@/lib/db/blueprints";
+import { listCredentials } from "@/lib/db/credentials";
 import { listProjects } from "@/lib/db/projects";
 
 import { createDryRunAction } from "../actions";
@@ -18,20 +20,37 @@ import { NewRunForm } from "./_components/new-run-form";
 export const dynamic = "force-dynamic";
 
 export default async function NewRunPage() {
-  const [projects, blueprints] = await Promise.all([
+  const [projects, blueprints, credentials] = await Promise.all([
     listProjects(),
     listBlueprints(),
+    listCredentials(),
   ]);
+
+  let liveModeAllowed = isLiveMode;
+  let liveModeBlockedReason: string | undefined;
+  if (!isLiveMode) {
+    liveModeBlockedReason = "DEPLOYOPS_LIVE=0 in the server env. Set to 1 in Vercel and redeploy to enable.";
+  } else {
+    const required = ["github_pat", "vercel", "neon"] as const;
+    const unverified = required.filter(
+      (k) =>
+        credentials.find((c) => c.kind === k)?.connectionState !== "verified",
+    );
+    if (unverified.length > 0) {
+      liveModeAllowed = false;
+      liveModeBlockedReason = `Live mode blocked: providers not verified — ${unverified.join(", ")}. Verify each on /providers first.`;
+    }
+  }
 
   return (
     <PageShell
       eyebrow="Workspace"
       title="New deploy"
-      description="Create a dry-run for any combination of project, blueprint, and environment. The run materialises one row per stage and you can step through it on the next screen."
+      description="Create a run for any combination of project, blueprint, and environment. Dry-run is the default; live mode unlocks when DEPLOYOPS_LIVE=1 and all three providers are verified."
     >
       <Card className="max-w-3xl">
         <CardHeader>
-          <CardTitle>Dry-run plan</CardTitle>
+          <CardTitle>Run plan</CardTitle>
         </CardHeader>
         <CardContent>
           <NewRunForm
@@ -46,6 +65,8 @@ export default async function NewRunPage() {
               slug: b.slug,
               name: b.name,
             }))}
+            liveModeAllowed={liveModeAllowed}
+            liveModeBlockedReason={liveModeBlockedReason}
           />
         </CardContent>
       </Card>

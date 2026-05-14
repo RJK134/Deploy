@@ -59,21 +59,22 @@ interface PlannedStageInput {
   skipped: boolean;
 }
 
-export async function createDryRun(args: {
+export async function createRun(args: {
   projectId: string;
   environment: Environment;
+  mode: RunMode;
   plan: RunPlan;
   plannedStages: PlannedStageInput[];
   actor: string;
 }): Promise<string> {
-  const { projectId, environment, plan, plannedStages, actor } = args;
+  const { projectId, environment, mode, plan, plannedStages, actor } = args;
 
   const [run] = await db
     .insert(runs)
     .values({
       projectId,
       environment,
-      mode: "dry_run",
+      mode,
       status: "pending",
       planJson: plan,
       triggeredBy: actor,
@@ -97,7 +98,7 @@ export async function createDryRun(args: {
     action: "run.created",
     target: run.id,
     metadata: {
-      mode: "dry_run",
+      mode,
       environment,
       blueprintSlug: plan.blueprintSlug,
     },
@@ -105,6 +106,11 @@ export async function createDryRun(args: {
 
   return run.id;
 }
+
+/** @deprecated use createRun with mode: 'dry_run'. */
+export const createDryRun = (
+  args: Omit<Parameters<typeof createRun>[0], "mode">,
+) => createRun({ ...args, mode: "dry_run" });
 
 export async function listRuns(limit = 50): Promise<RunListItem[]> {
   const rows = await db

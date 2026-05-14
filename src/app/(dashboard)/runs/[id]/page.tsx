@@ -1,6 +1,13 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Boxes, Clock, ExternalLink, Layers } from "lucide-react";
+import {
+  ArrowLeft,
+  Boxes,
+  Clock,
+  ExternalLink,
+  Layers,
+  ShieldAlert,
+} from "lucide-react";
 
 import { PageShell } from "@/components/page-shell";
 import { RunStatusPill } from "@/components/run-status-pill";
@@ -63,6 +70,24 @@ export default async function RunDetailPage({ params }: PageProps) {
         />
       }
     >
+      {run.mode === "live" ? (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+        >
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          <div>
+            <p className="font-medium">Live mode</p>
+            <p className="text-destructive/80">
+              Each stage calls real provider APIs with the operator&rsquo;s
+              stored credentials. Read-only probes run immediately;
+              destructive operations (deployment trigger, Neon branch create,
+              workflow commit) are still deferred to a later session. The
+              dry-run simulator is bypassed for this run.
+            </p>
+          </div>
+        </div>
+      ) : null}
       <section
         aria-label="Run summary"
         className="grid grid-cols-1 gap-4 lg:grid-cols-3"

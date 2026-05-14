@@ -61,14 +61,14 @@ const groups: NavGroup[] = [
       { label: "Connection Center", href: "/providers", icon: Plug },
       { label: "Live Readiness", href: "/readiness", icon: ShieldCheck },
       { label: "Audit log", href: "/audit", icon: ScrollText },
-      { label: "Fix Bot", href: "/fixbot", icon: Sparkles, disabled: true },
+      { label: "Fix Bot", href: "/fixbot", icon: Sparkles },
     ],
   },
   {
     label: "Production",
     items: [
       { label: "Architecture", href: "/architecture", icon: Network },
-      { label: "Migration plan", href: "/migration", icon: Map, disabled: true },
+      { label: "Migration plan", href: "/migration", icon: Map },
     ],
   },
 ];

@@ -38,10 +38,13 @@ const envSchema = z.object({
     .string()
     .email("must be the operator's GitHub-verified email address"),
   ENCRYPTION_KEY: base64ThirtyTwoBytes,
+  ENCRYPTION_KEY_NEXT: base64ThirtyTwoBytes.optional(),
   DEPLOYOPS_LIVE: z
     .enum(["0", "1"])
     .default("0")
     .describe("global kill switch — only Session 5+ flips this to 1"),
+  GITHUB_WEBHOOK_SECRET: z.string().min(8).optional(),
+  VERCEL_WEBHOOK_SECRET: z.string().min(8).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -71,3 +71,58 @@ export async function decrypt(ciphertext: string): Promise<string> {
   );
   return TEXT_DECODER.decode(ptBuf);
 }
+
+/**
+ * Import a base64-encoded 32-byte key for explicit-key crypto operations
+ * (currently only used by the rotation helper).
+ */
+export async function importKeyFromBase64(base64: string): Promise<CryptoKey> {
+  const raw = base64ToBytes(base64);
+  if (raw.length !== KEY_BYTES) {
+    throw new Error(
+      `key must decode to exactly ${KEY_BYTES} bytes (got ${raw.length})`,
+    );
+  }
+  return crypto.subtle.importKey(
+    "raw",
+    raw,
+    { name: "AES-GCM" },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+export async function encryptWithKey(
+  plaintext: string,
+  key: CryptoKey,
+): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
+  const ctBuf = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    TEXT_ENCODER.encode(plaintext),
+  );
+  const ct = new Uint8Array(ctBuf);
+  const out = new Uint8Array(iv.length + ct.length);
+  out.set(iv, 0);
+  out.set(ct, iv.length);
+  return bytesToBase64(out);
+}
+
+export async function decryptWithKey(
+  ciphertext: string,
+  key: CryptoKey,
+): Promise<string> {
+  const all = base64ToBytes(ciphertext);
+  if (all.length <= IV_BYTES) {
+    throw new Error("ciphertext too short");
+  }
+  const iv = all.slice(0, IV_BYTES);
+  const ct = all.slice(IV_BYTES);
+  const ptBuf = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv },
+    key,
+    ct,
+  );
+  return TEXT_DECODER.decode(ptBuf);
+}

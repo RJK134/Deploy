@@ -68,6 +68,9 @@ export const projects = pgTable("projects", {
     .notNull()
     .default("private"),
   customDomain: text("custom_domain"),
+  vercelProjectId: text("vercel_project_id"),
+  vercelTeamId: text("vercel_team_id"),
+  neonProjectId: text("neon_project_id"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
@@ -123,6 +126,103 @@ export const auditLog = pgTable("audit_log", {
   action: text("action").notNull(),
   target: text("target"),
   metadataJson: jsonb("metadata_json"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
+export const AUTONOMY_LEVELS = [
+  "diagnose-only",
+  "prepare-fix",
+  "approval-required",
+  "safe-auto-fix",
+] as const;
+export type AutonomyLevel = (typeof AUTONOMY_LEVELS)[number];
+
+export const INCIDENT_STATUSES = [
+  "open",
+  "diagnosed",
+  "remediating",
+  "resolved",
+  "dismissed",
+] as const;
+export type IncidentStatus = (typeof INCIDENT_STATUSES)[number];
+
+export const MONITOR_KINDS = ["http", "build", "migration", "env", "domain", "workflow"] as const;
+export type MonitorKind = (typeof MONITOR_KINDS)[number];
+
+export const MONITOR_STATUSES = ["healthy", "warning", "down", "unknown"] as const;
+export type MonitorStatus = (typeof MONITOR_STATUSES)[number];
+
+export const fixbotMonitors = pgTable("fixbot_monitors", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: uuid("project_id").references(() => projects.id, {
+    onDelete: "cascade",
+  }),
+  kind: text("kind", { enum: MONITOR_KINDS }).notNull(),
+  label: text("label").notNull(),
+  config: jsonb("config").notNull(),
+  status: text("status", { enum: MONITOR_STATUSES })
+    .notNull()
+    .default("unknown"),
+  lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
+export const fixbotIncidents = pgTable("fixbot_incidents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  monitorId: uuid("monitor_id").references(() => fixbotMonitors.id, {
+    onDelete: "set null",
+  }),
+  projectId: uuid("project_id").references(() => projects.id, {
+    onDelete: "cascade",
+  }),
+  title: text("title").notNull(),
+  summary: text("summary"),
+  status: text("status", { enum: INCIDENT_STATUSES })
+    .notNull()
+    .default("open"),
+  autonomy: text("autonomy", { enum: AUTONOMY_LEVELS })
+    .notNull()
+    .default("approval-required"),
+  openedAt: timestamp("opened_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+});
+
+export const fixbotDiagnoses = pgTable("fixbot_diagnoses", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  incidentId: uuid("incident_id")
+    .notNull()
+    .references(() => fixbotIncidents.id, { onDelete: "cascade" }),
+  rootCause: text("root_cause").notNull(),
+  evidence: jsonb("evidence"),
+  confidence: text("confidence", {
+    enum: ["low", "medium", "high"],
+  }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
+export const fixbotRemediations = pgTable("fixbot_remediations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  incidentId: uuid("incident_id")
+    .notNull()
+    .references(() => fixbotIncidents.id, { onDelete: "cascade" }),
+  action: text("action").notNull(),
+  description: text("description").notNull(),
+  payloadJson: jsonb("payload_json"),
+  approvalRequired: boolean("approval_required").notNull().default(true),
+  status: text("status", {
+    enum: ["draft", "queued", "applied", "failed", "dismissed"],
+  })
+    .notNull()
+    .default("draft"),
+  appliedAt: timestamp("applied_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
