@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  computeHmacHex,
   computeHmacSha256Hex,
+  verifyHmac,
   verifyHmacSha256,
 } from "@/lib/webhooks/hmac";
 
@@ -121,6 +123,77 @@ describe("verifyHmacSha256", () => {
         body,
         signatureHeader: `sha256=${sig}`,
         secret: "",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("verifyHmac (sha-1, for Vercel)", () => {
+  it("accepts a freshly computed SHA-1 signature with sha1= prefix", async () => {
+    const body = '{"event":"deployment.succeeded"}';
+    const sig = await computeHmacHex({
+      algorithm: "sha-1",
+      body,
+      secret: SECRET,
+    });
+    expect(
+      await verifyHmac({
+        algorithm: "sha-1",
+        body,
+        signatureHeader: `sha1=${sig}`,
+        secret: SECRET,
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts a bare hex SHA-1 signature (Vercel's actual format)", async () => {
+    const body = "deployment-payload";
+    const sig = await computeHmacHex({
+      algorithm: "sha-1",
+      body,
+      secret: SECRET,
+    });
+    expect(sig.length).toBe(40);
+    expect(
+      await verifyHmac({
+        algorithm: "sha-1",
+        body,
+        signatureHeader: sig,
+        secret: SECRET,
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects a SHA-256 signature when SHA-1 is expected", async () => {
+    const body = "x";
+    const sig = await computeHmacHex({
+      algorithm: "sha-256",
+      body,
+      secret: SECRET,
+    });
+    expect(
+      await verifyHmac({
+        algorithm: "sha-1",
+        body,
+        signatureHeader: sig,
+        secret: SECRET,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a SHA-1 signature when SHA-256 is expected", async () => {
+    const body = "x";
+    const sig = await computeHmacHex({
+      algorithm: "sha-1",
+      body,
+      secret: SECRET,
+    });
+    expect(
+      await verifyHmac({
+        algorithm: "sha-256",
+        body,
+        signatureHeader: sig,
+        secret: SECRET,
       }),
     ).toBe(false);
   });

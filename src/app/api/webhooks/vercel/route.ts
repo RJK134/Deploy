@@ -3,16 +3,15 @@ import { NextResponse } from "next/server";
 import { recordAudit } from "@/lib/db/audit";
 import { recordWebhookEvent } from "@/lib/db/webhooks";
 import { env } from "@/lib/env";
-import { verifyHmacSha256 } from "@/lib/webhooks/hmac";
+import { verifyHmac } from "@/lib/webhooks/hmac";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Vercel sends `x-vercel-signature` containing the hex-encoded
- * HMAC-SHA1 by default; newer subscriptions use HMAC-SHA256. We verify
- * SHA-256 only — set the secret as `VERCEL_WEBHOOK_SECRET` and configure
- * the webhook to sign with that algorithm.
+ * Vercel sends `x-vercel-signature` containing the hex-encoded HMAC-SHA1 of
+ * the raw request body, signed with the team webhook secret. We verify with
+ * SHA-1 to match what Vercel actually emits.
  */
 export async function POST(req: Request) {
   const secret = env.VERCEL_WEBHOOK_SECRET;
@@ -27,7 +26,8 @@ export async function POST(req: Request) {
   const signature = req.headers.get("x-vercel-signature");
   const eventType = req.headers.get("x-vercel-event") ?? "unknown";
 
-  const valid = await verifyHmacSha256({
+  const valid = await verifyHmac({
+    algorithm: "sha-1",
     body,
     signatureHeader: signature,
     secret,

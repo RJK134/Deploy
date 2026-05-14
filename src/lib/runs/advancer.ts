@@ -181,9 +181,24 @@ export async function advanceRunOne(
       ? outcome.status
       : "running";
 
+  // If the stage failed, mark the whole run as failed in the DB so the
+  // returned runStatus matches persisted state. Without this the run would
+  // sit forever in 'running' after a failed stage.
+  let runStatus: "running" | "failed" = "running";
+  if (outcome.status === "failed") {
+    await markRunFinished(runId, "failed");
+    await recordAudit({
+      actor,
+      action: "run.failed",
+      target: runId,
+      metadata: { failedAt: stage.id, kind: stage.kind },
+    });
+    runStatus = "failed";
+  }
+
   return {
     advanced: true,
-    runStatus: outcome.status === "failed" ? "failed" : "running",
+    runStatus,
     stage: {
       id: stage.id,
       kind: stage.kind,

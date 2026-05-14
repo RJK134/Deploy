@@ -16,6 +16,21 @@ const base64ThirtyTwoBytes = z
     { message: "must be base64 encoding of exactly 32 bytes" },
   );
 
+/**
+ * Wrap a Zod string schema so that the empty string (which is what
+ * `.env.example` writes for unset values) is treated the same as `undefined`.
+ * Without this, copying `.env.example` to `.env.local` would fail validation
+ * even though the variable is logically optional. The optional() is applied
+ * INSIDE so `undefined` is accepted by the inner pipeline.
+ */
+function emptyAsUndefined<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? undefined : value,
+    schema.optional(),
+  );
+}
+
 const postgresUrl = z
   .string()
   .url("must be a valid Postgres connection URL")
@@ -38,13 +53,13 @@ const envSchema = z.object({
     .string()
     .email("must be the operator's GitHub-verified email address"),
   ENCRYPTION_KEY: base64ThirtyTwoBytes,
-  ENCRYPTION_KEY_NEXT: base64ThirtyTwoBytes.optional(),
+  ENCRYPTION_KEY_NEXT: emptyAsUndefined(base64ThirtyTwoBytes),
   DEPLOYOPS_LIVE: z
     .enum(["0", "1"])
     .default("0")
     .describe("global kill switch — only Session 5+ flips this to 1"),
-  GITHUB_WEBHOOK_SECRET: z.string().min(8).optional(),
-  VERCEL_WEBHOOK_SECRET: z.string().min(8).optional(),
+  GITHUB_WEBHOOK_SECRET: emptyAsUndefined(z.string().min(8)),
+  VERCEL_WEBHOOK_SECRET: emptyAsUndefined(z.string().min(8)),
 });
 
 export type Env = z.infer<typeof envSchema>;
