@@ -46,9 +46,10 @@ function actionPalette(action: string): string {
 
 export default async function AuditPage({ searchParams }: PageProps) {
   const before = parseDate(searchParams.before);
-  const limit = Number.parseInt(searchParams.limit ?? "100", 10) || 100;
+  const requestedLimit = Number.parseInt(searchParams.limit ?? "100", 10) || 100;
+  const effectiveLimit = Math.min(Math.max(requestedLimit, 1), 200);
   const [rows, total] = await Promise.all([
-    listAudit({ before, limit: Math.min(limit, 200) }),
+    listAudit({ before, limit: effectiveLimit }),
     countAudit(),
   ]);
 
@@ -133,7 +134,7 @@ export default async function AuditPage({ searchParams }: PageProps) {
         </CardContent>
       </Card>
 
-      {nextHref && rows.length === limit ? (
+      {nextHref && rows.length === effectiveLimit ? (
         <p className="text-xs text-muted-foreground">
           Showing {rows.length} rows. {" "}
           <a className="font-mono text-foreground hover:underline" href={nextHref}>
