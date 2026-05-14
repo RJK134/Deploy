@@ -3,10 +3,16 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 
+import { isLiveMode } from "@/lib/env";
 import { getBlueprintById } from "@/lib/db/blueprints";
+import { listCredentials } from "@/lib/db/credentials";
 import { getProjectById } from "@/lib/db/projects";
-import { createDryRun } from "@/lib/db/runs";
-import { ENVIRONMENTS, type Environment } from "@/lib/pipeline/stages";
+import { createRun } from "@/lib/db/runs";
+import {
+  ENVIRONMENTS,
+  type Environment,
+  type RunMode,
+} from "@/lib/pipeline/stages";
 import { advanceRunOne, autoAdvanceRun } from "@/lib/runs/advancer";
 import { planRun } from "@/lib/runs/planner";
 import { requireActorEmail } from "@/lib/server-actor";
@@ -24,12 +30,34 @@ export async function createDryRunAction(formData: FormData): Promise<void> {
   const projectId = formData.get("projectId");
   const blueprintId = formData.get("blueprintId");
   const environment = assertEnvironment(formData.get("environment"));
+  const requestedLive = formData.get("liveMode") === "1";
 
   if (typeof projectId !== "string" || !projectId) {
     throw new Error("projectId is required");
   }
   if (typeof blueprintId !== "string" || !blueprintId) {
     throw new Error("blueprintId is required");
+  }
+
+  let mode: RunMode = "dry_run";
+  if (requestedLive) {
+    if (!isLiveMode) {
+      throw new Error(
+        "DEPLOYOPS_LIVE=0; live mode is disabled at the env level. Flip the env flag before creating a live run.",
+      );
+    }
+    const credentials = await listCredentials();
+    const required = ["github_pat", "vercel", "neon"] as const;
+    const unverified = required.filter(
+      (k) =>
+        credentials.find((c) => c.kind === k)?.connectionState !== "verified",
+    );
+    if (unverified.length > 0) {
+      throw new Error(
+        `Live mode blocked: providers not verified — ${unverified.join(", ")}.`,
+      );
+    }
+    mode = "live";
   }
 
   const [project, blueprint] = await Promise.all([
@@ -51,9 +79,10 @@ export async function createDryRunAction(formData: FormData): Promise<void> {
     environment,
   });
 
-  const runId = await createDryRun({
+  const runId = await createRun({
     projectId: project.id,
     environment,
+    mode,
     plan,
     plannedStages: plan.stages,
     actor,

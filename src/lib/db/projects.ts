@@ -21,6 +21,9 @@ export interface ProjectView {
   framework: string | null;
   accessMode: AccessMode;
   customDomain: string | null;
+  vercelProjectId: string | null;
+  vercelTeamId: string | null;
+  neonProjectId: string | null;
   createdAt: Date;
 }
 
@@ -40,8 +43,45 @@ const projectColumns = {
   framework: projects.framework,
   accessMode: projects.accessMode,
   customDomain: projects.customDomain,
+  vercelProjectId: projects.vercelProjectId,
+  vercelTeamId: projects.vercelTeamId,
+  neonProjectId: projects.neonProjectId,
   createdAt: projects.createdAt,
 } as const;
+
+export async function setProjectProviderIds(args: {
+  projectId: string;
+  vercelProjectId: string | null;
+  vercelTeamId: string | null;
+  neonProjectId: string | null;
+  actor: string;
+}): Promise<void> {
+  const norm = (v: string | null) => {
+    if (!v) return null;
+    const trimmed = v.trim();
+    return trimmed === "" ? null : trimmed;
+  };
+  const rows = await db
+    .update(projects)
+    .set({
+      vercelProjectId: norm(args.vercelProjectId),
+      vercelTeamId: norm(args.vercelTeamId),
+      neonProjectId: norm(args.neonProjectId),
+    })
+    .where(eq(projects.id, args.projectId))
+    .returning({ slug: projects.slug });
+  if (rows.length === 0) throw new Error("project not found");
+  await recordAudit({
+    actor: args.actor,
+    action: "project.providerIds.set",
+    target: rows[0].slug,
+    metadata: {
+      vercelProjectId: norm(args.vercelProjectId),
+      vercelTeamId: norm(args.vercelTeamId),
+      neonProjectId: norm(args.neonProjectId),
+    },
+  });
+}
 
 export async function listProjects(): Promise<ProjectView[]> {
   return db.select(projectColumns).from(projects).orderBy(projects.createdAt);

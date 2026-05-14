@@ -1,7 +1,8 @@
 "use client";
 
+import * as React from "react";
 import { useFormStatus } from "react-dom";
-import { Loader2, PlayCircle } from "lucide-react";
+import { Loader2, PlayCircle, ShieldAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -22,6 +23,8 @@ interface NewRunFormProps {
   action: (formData: FormData) => void;
   projects: ProjectOption[];
   blueprints: BlueprintOption[];
+  liveModeAllowed: boolean;
+  liveModeBlockedReason?: string;
 }
 
 function Submit({ disabled }: { disabled: boolean }) {
@@ -33,7 +36,7 @@ function Submit({ disabled }: { disabled: boolean }) {
       ) : (
         <PlayCircle className="h-4 w-4" aria-hidden />
       )}
-      {pending ? "Planning…" : "Create dry-run"}
+      {pending ? "Planning…" : "Create run"}
     </Button>
   );
 }
@@ -43,8 +46,15 @@ const inputClass = cn(
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
 );
 
-export function NewRunForm({ action, projects, blueprints }: NewRunFormProps) {
+export function NewRunForm({
+  action,
+  projects,
+  blueprints,
+  liveModeAllowed,
+  liveModeBlockedReason,
+}: NewRunFormProps) {
   const disabled = projects.length === 0 || blueprints.length === 0;
+  const [liveChecked, setLiveChecked] = React.useState(false);
 
   return (
     <form action={action} className="space-y-4">
@@ -124,10 +134,51 @@ export function NewRunForm({ action, projects, blueprints }: NewRunFormProps) {
         </div>
       </div>
 
+      <div
+        className={cn(
+          "flex flex-col gap-2 rounded-md border p-3 text-xs",
+          liveChecked
+            ? "border-destructive/40 bg-destructive/5"
+            : "border-border",
+        )}
+      >
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="checkbox"
+            name="liveMode"
+            value="1"
+            checked={liveModeAllowed ? liveChecked : false}
+            onChange={(e) => setLiveChecked(e.target.checked)}
+            disabled={!liveModeAllowed}
+            className="h-3.5 w-3.5"
+          />
+          <span className="text-sm font-medium">Live mode</span>
+          <span className="text-muted-foreground">
+            (mutates real GitHub / Vercel / Neon resources for verified
+            providers)
+          </span>
+        </label>
+        {!liveModeAllowed ? (
+          <p className="flex items-start gap-1.5 text-muted-foreground">
+            <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+            {liveModeBlockedReason ??
+              "Live mode is unavailable. DEPLOYOPS_LIVE must be 1 and all three providers must be verified."}
+          </p>
+        ) : liveChecked ? (
+          <p className="flex items-start gap-1.5 text-destructive">
+            <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+            Live mode will call provider APIs with the stored credentials.
+            Destructive operations (deployment trigger, branch creation) are
+            still deferred to Session 7 — but read-only probes WILL be made.
+          </p>
+        ) : null}
+      </div>
+
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs text-muted-foreground">
-          Creates a dry-run row with one stage per blueprint step. Nothing
-          calls GitHub, Vercel, or Neon — Session 5 wires the real adapters.
+          Without &ldquo;Live mode&rdquo;, the run uses the dry-run simulator —
+          every stage produces realistic output without calling any external
+          API.
         </p>
         <Submit disabled={disabled} />
       </div>
