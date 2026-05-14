@@ -3,7 +3,11 @@
 import { revalidatePath } from "next/cache";
 
 import { getCredentialPlaintext } from "@/lib/db/credentials";
-import { addProject, deleteProjectById } from "@/lib/db/projects";
+import {
+  addProject,
+  deleteProjectById,
+  setProjectBlueprint,
+} from "@/lib/db/projects";
 import { probeGitHubRepo } from "@/lib/providers/github";
 import { requireActorEmail } from "@/lib/server-actor";
 
@@ -73,4 +77,24 @@ export async function removeProjectAction(formData: FormData): Promise<void> {
   await deleteProjectById(id, await requireActorEmail());
   revalidatePath("/projects");
   revalidatePath("/");
+}
+
+export async function setProjectBlueprintAction(
+  formData: FormData,
+): Promise<void> {
+  const projectId = formData.get("projectId");
+  const rawBlueprint = formData.get("blueprintId");
+  if (typeof projectId !== "string" || !projectId) {
+    throw new Error("projectId is required");
+  }
+  const blueprintId =
+    typeof rawBlueprint === "string" && rawBlueprint !== ""
+      ? rawBlueprint
+      : null;
+  await setProjectBlueprint({
+    projectId,
+    blueprintId,
+    actor: await requireActorEmail(),
+  });
+  revalidatePath("/projects");
 }

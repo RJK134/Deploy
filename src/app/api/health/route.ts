@@ -3,7 +3,10 @@ import { NextResponse } from "next/server";
 import { pingDatabase } from "@/lib/db/client";
 import { listCredentials } from "@/lib/db/credentials";
 import { countProjects } from "@/lib/db/projects";
+import { countRunsSince } from "@/lib/db/runs";
 import type { ProviderKind } from "@/lib/db/schema";
+
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -48,12 +51,21 @@ export async function GET() {
   const commit = process.env.VERCEL_GIT_COMMIT_SHA ?? "local";
 
   if (dbUp) {
-    const [providers, projects] = await Promise.all([
+    const sevenDaysAgo = new Date(Date.now() - SEVEN_DAYS_MS);
+    const [providers, projects, runs7d] = await Promise.all([
       providerHealth(),
       projectCount(),
+      countRunsSince(sevenDaysAgo).catch(() => 0),
     ]);
     return NextResponse.json(
-      { ok: true, db: "up", providers, projects, commit },
+      {
+        ok: true,
+        db: "up",
+        providers,
+        projects,
+        runs7d,
+        commit,
+      },
       { status: 200 },
     );
   }
@@ -63,6 +75,7 @@ export async function GET() {
       db: "down",
       providers: { github: "absent", vercel: "absent", neon: "absent" },
       projects: 0,
+      runs7d: 0,
       commit,
     },
     { status: 503 },

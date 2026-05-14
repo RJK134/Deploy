@@ -10,20 +10,34 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { listBlueprints } from "@/lib/db/blueprints";
 import { listCredentials } from "@/lib/db/credentials";
 import { listProjects } from "@/lib/db/projects";
 
-import { addProjectAction, removeProjectAction } from "./actions";
+import {
+  addProjectAction,
+  removeProjectAction,
+  setProjectBlueprintAction,
+} from "./actions";
 import { AddProjectForm } from "./_components/add-project-form";
+import { BlueprintSelect } from "./_components/blueprint-select";
 import { RemoveProjectButton } from "./_components/remove-project-button";
 
 export const dynamic = "force-dynamic";
 
 export default async function ProjectsPage() {
-  const [projects, credentials] = await Promise.all([
+  const [projects, credentials, blueprints] = await Promise.all([
     listProjects(),
     listCredentials(),
+    listBlueprints(),
   ]);
+
+  const blueprintOptions = blueprints.map((b) => ({
+    id: b.id,
+    slug: b.slug,
+    name: b.name,
+  }));
+  const blueprintNameById = new Map(blueprints.map((b) => [b.id, b.name]));
 
   const gh = credentials.find((c) => c.kind === "github_pat");
   const ghVerified = gh?.connectionState === "verified";
@@ -104,6 +118,17 @@ export default async function ProjectsPage() {
                         ) : (
                           <span>default branch unknown</span>
                         )}
+                        {p.blueprintId &&
+                        blueprintNameById.has(p.blueprintId) ? (
+                          <span className="inline-flex items-center gap-1">
+                            blueprint:{" "}
+                            <code className="font-mono text-foreground">
+                              {blueprintNameById.get(p.blueprintId)}
+                            </code>
+                          </span>
+                        ) : (
+                          <span>no blueprint bound</span>
+                        )}
                         <span>
                           added{" "}
                           <time dateTime={p.createdAt.toISOString()}>
@@ -111,6 +136,12 @@ export default async function ProjectsPage() {
                           </time>
                         </span>
                       </div>
+                      <BlueprintSelect
+                        action={setProjectBlueprintAction}
+                        projectId={p.id}
+                        current={p.blueprintId}
+                        options={blueprintOptions}
+                      />
                     </div>
                     <RemoveProjectButton
                       action={removeProjectAction}
