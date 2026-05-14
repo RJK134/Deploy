@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ExternalLink, GitBranch, GitFork } from "lucide-react";
+import { ExternalLink, EyeOff, GitBranch, GitFork, Globe, Users } from "lucide-react";
 
 import { PageShell } from "@/components/page-shell";
 import { Badge } from "@/components/ui/badge";
@@ -118,6 +118,16 @@ export default async function ProjectsPage() {
                         ) : (
                           <span>default branch unknown</span>
                         )}
+                        <span className="inline-flex items-center gap-1">
+                          {p.accessMode === "public" ? (
+                            <Globe className="h-3 w-3" aria-hidden />
+                          ) : p.accessMode === "client" ? (
+                            <Users className="h-3 w-3" aria-hidden />
+                          ) : (
+                            <EyeOff className="h-3 w-3" aria-hidden />
+                          )}
+                          {p.accessMode}
+                        </span>
                         {p.blueprintId &&
                         blueprintNameById.has(p.blueprintId) ? (
                           <span className="inline-flex items-center gap-1">
