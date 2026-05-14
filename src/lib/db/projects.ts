@@ -4,7 +4,12 @@ import { eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db/client";
 import { recordAudit } from "@/lib/db/audit";
-import { projects } from "@/lib/db/schema";
+import {
+  ACCESS_MODES,
+  projects,
+  type AccessMode,
+} from "@/lib/db/schema";
+import { normaliseCustomDomain } from "@/lib/format/domain";
 
 export interface ProjectView {
   id: string;
@@ -14,43 +19,39 @@ export interface ProjectView {
   blueprintId: string | null;
   defaultBranch: string | null;
   framework: string | null;
+  accessMode: AccessMode;
+  customDomain: string | null;
   createdAt: Date;
 }
+
+export { ACCESS_MODES, type AccessMode };
 
 function slugFor(owner: string, repo: string): string {
   return `${owner.toLowerCase()}/${repo.toLowerCase()}`;
 }
 
+const projectColumns = {
+  id: projects.id,
+  slug: projects.slug,
+  githubOwner: projects.githubOwner,
+  githubRepo: projects.githubRepo,
+  blueprintId: projects.blueprintId,
+  defaultBranch: projects.defaultBranch,
+  framework: projects.framework,
+  accessMode: projects.accessMode,
+  customDomain: projects.customDomain,
+  createdAt: projects.createdAt,
+} as const;
+
 export async function listProjects(): Promise<ProjectView[]> {
-  return db
-    .select({
-      id: projects.id,
-      slug: projects.slug,
-      githubOwner: projects.githubOwner,
-      githubRepo: projects.githubRepo,
-      blueprintId: projects.blueprintId,
-      defaultBranch: projects.defaultBranch,
-      framework: projects.framework,
-      createdAt: projects.createdAt,
-    })
-    .from(projects)
-    .orderBy(projects.createdAt);
+  return db.select(projectColumns).from(projects).orderBy(projects.createdAt);
 }
 
 export async function getProjectById(
   id: string,
 ): Promise<ProjectView | null> {
   const rows = await db
-    .select({
-      id: projects.id,
-      slug: projects.slug,
-      githubOwner: projects.githubOwner,
-      githubRepo: projects.githubRepo,
-      blueprintId: projects.blueprintId,
-      defaultBranch: projects.defaultBranch,
-      framework: projects.framework,
-      createdAt: projects.createdAt,
-    })
+    .select(projectColumns)
     .from(projects)
     .where(eq(projects.id, id))
     .limit(1);
@@ -95,16 +96,7 @@ export async function addProject(args: {
         defaultBranch: sql`excluded.default_branch`,
       },
     })
-    .returning({
-      id: projects.id,
-      slug: projects.slug,
-      githubOwner: projects.githubOwner,
-      githubRepo: projects.githubRepo,
-      blueprintId: projects.blueprintId,
-      defaultBranch: projects.defaultBranch,
-      framework: projects.framework,
-      createdAt: projects.createdAt,
-    });
+    .returning(projectColumns);
 
   const row = inserted[0];
   await recordAudit({
@@ -113,6 +105,30 @@ export async function addProject(args: {
     target: row.slug,
   });
   return row;
+}
+
+export async function setProjectAccess(args: {
+  projectId: string;
+  accessMode: AccessMode;
+  customDomain: string | null;
+  actor: string;
+}): Promise<void> {
+  const domainValue = normaliseCustomDomain(args.customDomain);
+  const rows = await db
+    .update(projects)
+    .set({
+      accessMode: args.accessMode,
+      customDomain: domainValue,
+    })
+    .where(eq(projects.id, args.projectId))
+    .returning({ slug: projects.slug });
+  if (rows.length === 0) throw new Error("project not found");
+  await recordAudit({
+    actor: args.actor,
+    action: "project.access.set",
+    target: rows[0].slug,
+    metadata: { accessMode: args.accessMode, customDomain: domainValue },
+  });
 }
 
 export async function setProjectBlueprint(args: {

@@ -53,6 +53,9 @@ export const blueprints = pgTable("blueprints", {
     .notNull(),
 });
 
+export const ACCESS_MODES = ["public", "client", "private"] as const;
+export type AccessMode = (typeof ACCESS_MODES)[number];
+
 export const projects = pgTable("projects", {
   id: uuid("id").primaryKey().defaultRandom(),
   slug: text("slug").notNull().unique(),
@@ -61,6 +64,10 @@ export const projects = pgTable("projects", {
   blueprintId: uuid("blueprint_id"),
   defaultBranch: text("default_branch"),
   framework: text("framework"),
+  accessMode: text("access_mode", { enum: ACCESS_MODES })
+    .notNull()
+    .default("private"),
+  customDomain: text("custom_domain"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),

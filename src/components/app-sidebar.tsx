@@ -14,6 +14,7 @@ import {
   Network,
   PlayCircle,
   Plug,
+  ScrollText,
   ShieldCheck,
   Sparkles,
   Workflow,
@@ -58,14 +59,15 @@ const groups: NavGroup[] = [
     items: [
       { label: "Access & domains", href: "/access", icon: KeyRound },
       { label: "Connection Center", href: "/providers", icon: Plug },
-      { label: "Live Readiness", href: "/readiness", icon: ShieldCheck, disabled: true },
+      { label: "Live Readiness", href: "/readiness", icon: ShieldCheck },
+      { label: "Audit log", href: "/audit", icon: ScrollText },
       { label: "Fix Bot", href: "/fixbot", icon: Sparkles, disabled: true },
     ],
   },
   {
     label: "Production",
     items: [
-      { label: "Architecture", href: "/architecture", icon: Network, disabled: true },
+      { label: "Architecture", href: "/architecture", icon: Network },
       { label: "Migration plan", href: "/migration", icon: Map, disabled: true },
     ],
   },
