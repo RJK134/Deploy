@@ -7,13 +7,7 @@ import { recordAudit } from "@/lib/db/audit";
 import { fixbotIncidents, fixbotMonitors } from "@/lib/db/schema";
 import { probeJson } from "@/lib/providers/probe";
 
-export interface HttpAnalyzerReport {
-  scanned: number;
-  healthy: number;
-  warning: number;
-  down: number;
-  incidentsOpened: number;
-}
+import { bumpReport, ZERO_REPORT, type AnalyzerReport } from "./types";
 
 interface HttpMonitorConfig {
   url?: unknown;
@@ -37,19 +31,13 @@ function asNumber(value: unknown): number | null {
  */
 export async function runHttpMonitorChecks(args: {
   actor: string;
-}): Promise<HttpAnalyzerReport> {
+}): Promise<AnalyzerReport> {
   const monitors = await db
     .select()
     .from(fixbotMonitors)
     .where(eq(fixbotMonitors.kind, "http"));
 
-  const report: HttpAnalyzerReport = {
-    scanned: monitors.length,
-    healthy: 0,
-    warning: 0,
-    down: 0,
-    incidentsOpened: 0,
-  };
+  const report: AnalyzerReport = { ...ZERO_REPORT };
 
   for (const monitor of monitors) {
     const cfg: HttpMonitorConfig =
@@ -61,12 +49,11 @@ export async function runHttpMonitorChecks(args: {
     const expectedBody = asString(cfg.expectedBodyContains);
 
     if (!url) {
-      // Misconfigured monitor; mark warning rather than down.
       await db
         .update(fixbotMonitors)
         .set({ status: "warning", lastCheckedAt: sql`now()` })
         .where(eq(fixbotMonitors.id, monitor.id));
-      report.warning++;
+      bumpReport(report, "warning");
       continue;
     }
 
@@ -93,12 +80,8 @@ export async function runHttpMonitorChecks(args: {
       .update(fixbotMonitors)
       .set({ status: nextStatus, lastCheckedAt: sql`now()` })
       .where(eq(fixbotMonitors.id, monitor.id));
+    bumpReport(report, nextStatus);
 
-    if (nextStatus === "healthy") report.healthy++;
-    if (nextStatus === "warning") report.warning++;
-    if (nextStatus === "down") report.down++;
-
-    // Open an incident on the first transition to 'down' (avoid spam).
     if (nextStatus === "down" && previousStatus !== "down") {
       const [incident] = await db
         .insert(fixbotIncidents)
@@ -121,6 +104,7 @@ export async function runHttpMonitorChecks(args: {
           monitorLabel: monitor.label,
           reason: reason || null,
           url,
+          kind: "http",
         },
       });
     }

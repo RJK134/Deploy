@@ -224,3 +224,71 @@ export async function dismissIncident(
     target: id,
   });
 }
+
+export async function resolveIncident(
+  id: string,
+  actor: string,
+  note: string | null = null,
+): Promise<void> {
+  const rows = await db
+    .update(fixbotIncidents)
+    .set({ status: "resolved", resolvedAt: sql`now()` })
+    .where(eq(fixbotIncidents.id, id))
+    .returning({ id: fixbotIncidents.id });
+  if (rows.length === 0) throw new Error("incident not found");
+  await recordAudit({
+    actor,
+    action: "incident.resolved",
+    target: id,
+    metadata: note ? { note } : null,
+  });
+}
+
+export interface CreateMonitorArgs {
+  projectId: string | null;
+  kind: MonitorKind;
+  label: string;
+  config: Record<string, unknown>;
+  actor: string;
+}
+
+export async function createMonitor(args: CreateMonitorArgs): Promise<string> {
+  const [row] = await db
+    .insert(fixbotMonitors)
+    .values({
+      projectId: args.projectId,
+      kind: args.kind,
+      label: args.label,
+      config: args.config,
+      status: "unknown",
+    })
+    .returning({ id: fixbotMonitors.id });
+  await recordAudit({
+    actor: args.actor,
+    action: "monitor.created",
+    target: row.id,
+    metadata: {
+      kind: args.kind,
+      label: args.label,
+      projectId: args.projectId,
+    },
+  });
+  return row.id;
+}
+
+export async function deleteMonitor(
+  id: string,
+  actor: string,
+): Promise<void> {
+  const rows = await db
+    .delete(fixbotMonitors)
+    .where(eq(fixbotMonitors.id, id))
+    .returning({ id: fixbotMonitors.id, label: fixbotMonitors.label });
+  if (rows.length === 0) throw new Error("monitor not found");
+  await recordAudit({
+    actor,
+    action: "monitor.deleted",
+    target: id,
+    metadata: { label: rows[0].label },
+  });
+}
