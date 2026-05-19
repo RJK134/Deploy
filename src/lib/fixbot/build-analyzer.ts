@@ -4,6 +4,7 @@ import { eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db/client";
 import { recordAudit } from "@/lib/db/audit";
+import { draftRemediation } from "@/lib/db/remediations";
 import { fixbotIncidents, fixbotMonitors } from "@/lib/db/schema";
 import { probeJson } from "@/lib/providers/probe";
 
@@ -168,6 +169,19 @@ export async function runBuildMonitorChecks(args: {
           deploymentId: latest.uid ?? null,
           state: state ?? null,
         },
+      });
+      await draftRemediation({
+        incidentId: incident.id,
+        action: "deploy.retry",
+        description: `Investigate Vercel deployment ${latest.uid ?? "(unknown)"} (${state ?? "unknown state"}) and trigger a fresh deploy from /runs/new with live mode enabled. Check the deployment logs in Vercel for the failure cause first.`,
+        payload: {
+          provider: "vercel",
+          vercelProjectId: project.vercelProjectId,
+          deploymentId: latest.uid ?? null,
+          state: state ?? null,
+        },
+        autonomy: "approval-required",
+        actor: args.actor,
       });
     }
   }

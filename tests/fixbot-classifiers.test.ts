@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   classifyActionsRun,
+  classifyDomain,
+  classifyEnvKeys,
   classifyVercelState,
 } from "@/lib/fixbot/classifiers";
 
@@ -144,5 +146,83 @@ describe("classifyActionsRun", () => {
         DEFAULT_WORKFLOW_FAILS,
       ).reason,
     ).toContain("in_progress");
+  });
+});
+
+describe("classifyEnvKeys", () => {
+  it("returns healthy when every required key is present", () => {
+    const result = classifyEnvKeys(
+      ["DATABASE_URL", "NEXTAUTH_SECRET"],
+      new Set(["DATABASE_URL", "NEXTAUTH_SECRET", "EXTRA"]),
+    );
+    expect(result.status).toBe("healthy");
+    expect(result.missingKeys).toEqual([]);
+  });
+
+  it("returns down with the missing keys listed", () => {
+    const result = classifyEnvKeys(
+      ["DATABASE_URL", "NEXTAUTH_SECRET", "EXTRA"],
+      new Set(["DATABASE_URL"]),
+    );
+    expect(result.status).toBe("down");
+    expect(result.missingKeys).toEqual(["NEXTAUTH_SECRET", "EXTRA"]);
+    expect(result.reason).toContain("NEXTAUTH_SECRET");
+  });
+
+  it("returns healthy on empty required list (nothing to check)", () => {
+    const result = classifyEnvKeys([], new Set());
+    expect(result.status).toBe("healthy");
+  });
+
+  it("singular vs plural reason text", () => {
+    expect(
+      classifyEnvKeys(["A"], new Set()).reason,
+    ).toContain("1 env var");
+    expect(
+      classifyEnvKeys(["A", "B"], new Set()).reason,
+    ).toContain("2 env var");
+  });
+});
+
+describe("classifyDomain", () => {
+  it("returns healthy when no custom domain is configured", () => {
+    expect(classifyDomain(null, []).status).toBe("healthy");
+    expect(classifyDomain(null, [{ name: "x.com", verified: true }]).status).toBe(
+      "healthy",
+    );
+  });
+
+  it("returns down when the desired domain isn't attached", () => {
+    const result = classifyDomain("app.example.com", [
+      { name: "other.example.com", verified: true },
+    ]);
+    expect(result.status).toBe("down");
+    expect(result.verified).toBe(false);
+    expect(result.reason).toContain("not attached");
+  });
+
+  it("returns down when the domain is attached but unverified", () => {
+    const result = classifyDomain("app.example.com", [
+      { name: "app.example.com", verified: false },
+    ]);
+    expect(result.status).toBe("down");
+    expect(result.verified).toBe(false);
+    expect(result.reason).toContain("verification");
+  });
+
+  it("returns healthy when the domain is attached and verified", () => {
+    const result = classifyDomain("app.example.com", [
+      { name: "app.example.com", verified: true },
+    ]);
+    expect(result.status).toBe("healthy");
+    expect(result.verified).toBe(true);
+  });
+
+  it("treats missing 'verified' property as verified (Vercel sometimes omits it)", () => {
+    const result = classifyDomain("app.example.com", [
+      { name: "app.example.com" },
+    ]);
+    expect(result.status).toBe("healthy");
+    expect(result.verified).toBe(true);
   });
 });

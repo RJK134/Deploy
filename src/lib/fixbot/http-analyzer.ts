@@ -4,6 +4,7 @@ import { eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db/client";
 import { recordAudit } from "@/lib/db/audit";
+import { draftRemediation } from "@/lib/db/remediations";
 import { fixbotIncidents, fixbotMonitors } from "@/lib/db/schema";
 import { probeJson } from "@/lib/providers/probe";
 
@@ -106,6 +107,14 @@ export async function runHttpMonitorChecks(args: {
           url,
           kind: "http",
         },
+      });
+      await draftRemediation({
+        incidentId: incident.id,
+        action: "probe.retry",
+        description: `Investigate why ${url} is failing and re-trigger the deploy if needed. Hit '${url}' manually to confirm the failure, then check the latest deployment on Vercel for build errors.`,
+        payload: { url, lastError: reason || null },
+        autonomy: "approval-required",
+        actor: args.actor,
       });
     }
   }

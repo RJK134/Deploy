@@ -21,6 +21,17 @@ export interface WorkflowConfigInput {
   branch?: string | null;
 }
 
+export interface EnvConfigInput {
+  target?: "production" | "preview" | "development";
+  /** Comma-separated required keys; empty/null means "use blueprint manifest". */
+  requiredKeys?: string | null;
+}
+
+export interface DomainConfigInput {
+  /** Override project.customDomain; empty/null means "use project.customDomain". */
+  domain?: string | null;
+}
+
 export function buildHttpMonitorConfig(
   input: HttpConfigInput,
 ): Record<string, unknown> {
@@ -66,12 +77,59 @@ export function buildWorkflowMonitorConfig(
   };
 }
 
+const VALID_TARGETS = ["production", "preview", "development"] as const;
+type ValidTarget = (typeof VALID_TARGETS)[number];
+
+export function buildEnvMonitorConfig(
+  input: EnvConfigInput,
+): Record<string, unknown> {
+  const target: ValidTarget =
+    input.target && (VALID_TARGETS as readonly string[]).includes(input.target)
+      ? (input.target as ValidTarget)
+      : "production";
+  const raw = input.requiredKeys?.trim() ?? "";
+  const requiredKeys =
+    raw === ""
+      ? null
+      : raw
+          .split(",")
+          .map((k) => k.trim())
+          .filter((k) => k.length > 0);
+  if (requiredKeys) {
+    for (const k of requiredKeys) {
+      if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(k)) {
+        throw new Error(
+          `'${k}' is not a valid env var name (uppercase letters, digits, underscores; <=64 chars)`,
+        );
+      }
+    }
+  }
+  return {
+    target,
+    ...(requiredKeys ? { requiredKeys } : {}),
+  };
+}
+
+export function buildDomainMonitorConfig(
+  input: DomainConfigInput,
+): Record<string, unknown> {
+  const domain = input.domain?.trim();
+  if (domain && !/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(domain)) {
+    throw new Error(
+      "domain must be a bare hostname like app.example.com (no protocol, no path)",
+    );
+  }
+  return domain ? { domain: domain.toLowerCase() } : {};
+}
+
 export function buildMonitorConfig(
   kind: MonitorKind,
   input:
     | HttpConfigInput
     | BuildConfigInput
     | WorkflowConfigInput
+    | EnvConfigInput
+    | DomainConfigInput
     | Record<string, unknown>,
 ): Record<string, unknown> {
   switch (kind) {
@@ -82,7 +140,9 @@ export function buildMonitorConfig(
     case "workflow":
       return buildWorkflowMonitorConfig(input as WorkflowConfigInput);
     case "env":
+      return buildEnvMonitorConfig(input as EnvConfigInput);
     case "domain":
+      return buildDomainMonitorConfig(input as DomainConfigInput);
     case "migration":
       return {};
   }
