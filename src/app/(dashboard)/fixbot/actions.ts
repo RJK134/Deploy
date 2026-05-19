@@ -10,6 +10,7 @@ import {
 } from "@/lib/db/fixbot";
 import { MONITOR_KINDS, type MonitorKind } from "@/lib/db/schema";
 import { buildMonitorConfig } from "@/lib/fixbot/monitor-config";
+import { applyRemediation } from "@/lib/remediations/apply";
 import { requireActorEmail } from "@/lib/server-actor";
 
 function assertKind(value: FormDataEntryValue | null): MonitorKind {
@@ -125,4 +126,22 @@ export async function resolveIncidentAction(
   await resolveIncident(id, await requireActorEmail(), note);
   revalidatePath("/fixbot");
   revalidatePath(`/fixbot/${id}`);
+}
+
+export async function applyRemediationAction(
+  formData: FormData,
+): Promise<void> {
+  const remediationId = formData.get("remediationId");
+  const incidentId = formData.get("incidentId");
+  if (typeof remediationId !== "string" || !remediationId) {
+    throw new Error("remediationId is required");
+  }
+  await applyRemediation({
+    remediationId,
+    actor: await requireActorEmail(),
+  });
+  revalidatePath("/fixbot");
+  if (typeof incidentId === "string" && incidentId) {
+    revalidatePath(`/fixbot/${incidentId}`);
+  }
 }
