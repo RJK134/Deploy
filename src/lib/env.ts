@@ -60,6 +60,7 @@ const envSchema = z.object({
     .describe("global kill switch — only Session 5+ flips this to 1"),
   GITHUB_WEBHOOK_SECRET: emptyAsUndefined(z.string().min(8)),
   VERCEL_WEBHOOK_SECRET: emptyAsUndefined(z.string().min(8)),
+  CRON_SECRET: emptyAsUndefined(z.string().min(16)),
 });
 
 export type Env = z.infer<typeof envSchema>;

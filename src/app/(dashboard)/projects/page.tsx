@@ -18,9 +18,11 @@ import {
   addProjectAction,
   removeProjectAction,
   setProjectBlueprintAction,
+  setProjectProviderIdsAction,
 } from "./actions";
 import { AddProjectForm } from "./_components/add-project-form";
 import { BlueprintSelect } from "./_components/blueprint-select";
+import { ProviderIdsForm } from "./_components/provider-ids-form";
 import { RemoveProjectButton } from "./_components/remove-project-button";
 
 export const dynamic = "force-dynamic";
@@ -151,6 +153,13 @@ export default async function ProjectsPage() {
                         projectId={p.id}
                         current={p.blueprintId}
                         options={blueprintOptions}
+                      />
+                      <ProviderIdsForm
+                        action={setProjectProviderIdsAction}
+                        projectId={p.id}
+                        currentVercelProjectId={p.vercelProjectId}
+                        currentVercelTeamId={p.vercelTeamId}
+                        currentNeonProjectId={p.neonProjectId}
                       />
                     </div>
                     <RemoveProjectButton

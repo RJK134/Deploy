@@ -41,8 +41,9 @@ export const config = {
      *  - /api/health         (uptime probe, public)
      *  - /api/auth/*         (NextAuth handlers)
      *  - /api/webhooks/*     (signature-verified inbound, public)
+     *  - /api/cron/*         (CRON_SECRET-verified inbound, public)
      *  - /_next/static, /_next/image, favicon (Next internals)
      */
-    "/((?!api/health|api/auth|api/webhooks|_next/static|_next/image|favicon.ico).*)",
+    "/((?!api/health|api/auth|api/webhooks|api/cron|_next/static|_next/image|favicon.ico).*)",
   ],
 };
