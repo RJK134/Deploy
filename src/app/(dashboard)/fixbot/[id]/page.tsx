@@ -13,12 +13,21 @@ import {
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { getIncident } from "@/lib/db/fixbot";
+import { isLiveMode } from "@/lib/env";
+import { canRunRemediationAction } from "@/lib/fixbot/autonomy";
 import { relativeTime } from "@/lib/format/relative-time";
+import {
+  isKnownAction,
+  mutatesProviders,
+  type RemediationAction,
+} from "@/lib/remediations/apply-gate";
 
 import {
+  applyRemediationAction,
   dismissIncidentAction,
   resolveIncidentAction,
 } from "../actions";
+import { ApplyRemediationButton } from "./_components/apply-remediation-button";
 import { IncidentActions } from "./_components/incident-actions";
 
 export const dynamic = "force-dynamic";
@@ -152,41 +161,81 @@ export default async function IncidentDetailPage({ params }: PageProps) {
               </p>
             ) : (
               <ul className="space-y-2 text-xs">
-                {incident.remediations.map((r) => (
-                  <li
-                    key={r.id}
-                    className="space-y-1 rounded-md border border-border p-2"
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <Badge
-                        variant="outline"
-                        className="font-mono text-[10px]"
-                      >
-                        {r.action}
-                      </Badge>
-                      <Badge
-                        variant="outline"
-                        className="font-mono text-[10px]"
-                      >
-                        {r.status}
-                      </Badge>
-                      {r.approvalRequired ? (
+                {incident.remediations.map((r) => {
+                  const knownAction = isKnownAction(r.action)
+                    ? (r.action as RemediationAction)
+                    : null;
+                  const autonomyGate = canRunRemediationAction(
+                    incident.autonomy,
+                    "apply",
+                  );
+                  const willMutate = knownAction
+                    ? mutatesProviders(knownAction)
+                    : false;
+                  const applyDisabled =
+                    r.status !== "draft" ||
+                    !knownAction ||
+                    !autonomyGate.allowed ||
+                    (willMutate && !isLiveMode);
+                  const applyDisabledReason =
+                    r.status !== "draft"
+                      ? `status is '${r.status}'`
+                      : !knownAction
+                        ? `no handler for '${r.action}' yet`
+                        : !autonomyGate.allowed
+                          ? autonomyGate.reason
+                          : willMutate && !isLiveMode
+                            ? "DEPLOYOPS_LIVE=0 — apply would mutate a provider"
+                            : undefined;
+                  return (
+                    <li
+                      key={r.id}
+                      className="space-y-1 rounded-md border border-border p-2"
+                    >
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <Badge
                           variant="outline"
                           className="font-mono text-[10px]"
                         >
-                          approval required
+                          {r.action}
                         </Badge>
+                        <Badge
+                          variant="outline"
+                          className="font-mono text-[10px]"
+                        >
+                          {r.status}
+                        </Badge>
+                        {r.approvalRequired ? (
+                          <Badge
+                            variant="outline"
+                            className="font-mono text-[10px]"
+                          >
+                            approval required
+                          </Badge>
+                        ) : null}
+                        <div className="ml-auto">
+                          {knownAction ? (
+                            <ApplyRemediationButton
+                              action={applyRemediationAction}
+                              remediationId={r.id}
+                              incidentId={incident.id}
+                              verb={r.action}
+                              mutates={willMutate}
+                              disabled={applyDisabled}
+                              disabledReason={applyDisabledReason}
+                            />
+                          ) : null}
+                        </div>
+                      </div>
+                      <p>{r.description}</p>
+                      {r.payload ? (
+                        <p className="text-[10px] text-muted-foreground">
+                          {formatMetadata(r.payload)}
+                        </p>
                       ) : null}
-                    </div>
-                    <p>{r.description}</p>
-                    {r.payload ? (
-                      <p className="text-[10px] text-muted-foreground">
-                        {formatMetadata(r.payload)}
-                      </p>
-                    ) : null}
-                  </li>
-                ))}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </CardContent>
