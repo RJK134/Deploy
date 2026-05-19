@@ -7,6 +7,7 @@ import {
   addProject,
   deleteProjectById,
   setProjectBlueprint,
+  setProjectProviderIds,
 } from "@/lib/db/projects";
 import { probeGitHubRepo } from "@/lib/providers/github";
 import { requireActorEmail } from "@/lib/server-actor";
@@ -97,4 +98,35 @@ export async function setProjectBlueprintAction(
     actor: await requireActorEmail(),
   });
   revalidatePath("/projects");
+}
+
+function normaliseProviderId(value: FormDataEntryValue | null): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  if (trimmed.length > 200) {
+    throw new Error("provider id is too long (200 char max)");
+  }
+  if (!/^[A-Za-z0-9._\-:/]+$/.test(trimmed)) {
+    throw new Error("provider id contains invalid characters");
+  }
+  return trimmed;
+}
+
+export async function setProjectProviderIdsAction(
+  formData: FormData,
+): Promise<void> {
+  const projectId = formData.get("projectId");
+  if (typeof projectId !== "string" || !projectId) {
+    throw new Error("projectId is required");
+  }
+  await setProjectProviderIds({
+    projectId,
+    vercelProjectId: normaliseProviderId(formData.get("vercelProjectId")),
+    vercelTeamId: normaliseProviderId(formData.get("vercelTeamId")),
+    neonProjectId: normaliseProviderId(formData.get("neonProjectId")),
+    actor: await requireActorEmail(),
+  });
+  revalidatePath("/projects");
+  revalidatePath("/migration");
 }

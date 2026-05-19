@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, gte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, sql, type SQL } from "drizzle-orm";
 
 import { db } from "@/lib/db/client";
 import { recordAudit } from "@/lib/db/audit";
@@ -112,8 +112,24 @@ export const createDryRun = (
   args: Omit<Parameters<typeof createRun>[0], "mode">,
 ) => createRun({ ...args, mode: "dry_run" });
 
-export async function listRuns(limit = 50): Promise<RunListItem[]> {
-  const rows = await db
+export interface RunListFilters {
+  projectId?: string;
+  environment?: Environment;
+  status?: RunStatus;
+  mode?: RunMode;
+}
+
+export async function listRuns(
+  limit = 50,
+  filters: RunListFilters = {},
+): Promise<RunListItem[]> {
+  const where: SQL[] = [];
+  if (filters.projectId) where.push(eq(runs.projectId, filters.projectId));
+  if (filters.environment) where.push(eq(runs.environment, filters.environment));
+  if (filters.status) where.push(eq(runs.status, filters.status));
+  if (filters.mode) where.push(eq(runs.mode, filters.mode));
+  const whereClause = where.length === 0 ? undefined : and(...where);
+  const baseQuery = db
     .select({
       id: runs.id,
       projectId: runs.projectId,
@@ -130,6 +146,9 @@ export async function listRuns(limit = 50): Promise<RunListItem[]> {
     .leftJoin(projects, eq(projects.id, runs.projectId))
     .orderBy(desc(runs.createdAt))
     .limit(limit);
+  const rows = whereClause
+    ? await baseQuery.where(whereClause)
+    : await baseQuery;
   return rows as RunListItem[];
 }
 

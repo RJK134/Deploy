@@ -9,67 +9,125 @@ import {
 const NEON_HEADERS = (token: string): Record<string, string> => ({
   Authorization: `Bearer ${token}`,
   Accept: "application/json",
+  "Content-Type": "application/json",
 });
 
+/**
+ * Create a Neon branch named `${environment}-${repo}` if it doesn't already
+ * exist. Idempotent: returns the existing branch when found, posts otherwise.
+ */
 export async function liveDbProvision(
   ctx: LiveStageContext,
 ): Promise<StageOutcome> {
   const projectId = ctx.providerIds.neonProjectId;
   if (!projectId) {
     return notImplementedLiveOutcome(
-      "project.neonProjectId is not set; cannot provision a branch without a Neon project to target.",
+      "project.neonProjectId is not set; cannot provision a branch without a Neon project to target. Edit the project on /projects and paste the Neon project id.",
       { plan: ctx.plan.project.slug },
     );
   }
-  const probe = await probeJson(
+
+  const listRes = await probeJson(
     `https://console.neon.tech/api/v2/projects/${encodeURIComponent(projectId)}/branches`,
     { headers: NEON_HEADERS(ctx.credentials.neon) },
   );
-  if (!probe.ok) {
+  if (!listRes.ok) {
     return {
       status: "failed",
       logLines: [
-        `GET /projects/${projectId}/branches failed: ${probe.message}`,
+        `GET /projects/${projectId}/branches failed: ${listRes.message}`,
       ],
-      output: { status: probe.status },
-      error: { provider: "neon", projectId, message: probe.message },
+      output: { status: listRes.status },
+      error: { provider: "neon", projectId, message: listRes.message },
     };
   }
-  const detail = probe.detail ?? {};
+
+  const detail = listRes.detail ?? {};
   const branchesArr = Array.isArray(detail.branches) ? detail.branches : [];
-  const target = ctx.plan.predicted.branchName;
+  const targetName = ctx.plan.predicted.branchName;
   const existing = branchesArr.find(
     (b: unknown) =>
       typeof b === "object" &&
       b !== null &&
       "name" in b &&
-      (b as { name: unknown }).name === target,
+      (b as { name: unknown }).name === targetName,
+  ) as { id?: string; name?: string } | undefined;
+
+  if (existing) {
+    return {
+      status: "succeeded",
+      logLines: [
+        `Branch '${targetName}' already exists (id=${existing.id ?? "unknown"}); re-using.`,
+        "No POST sent — idempotent reuse path.",
+      ],
+      output: {
+        projectId,
+        branchId: existing.id ?? null,
+        branchName: targetName,
+        created: false,
+      },
+    };
+  }
+
+  // Create the branch.
+  const createRes = await probeJson(
+    `https://console.neon.tech/api/v2/projects/${encodeURIComponent(projectId)}/branches`,
+    {
+      method: "POST",
+      headers: NEON_HEADERS(ctx.credentials.neon),
+      body: JSON.stringify({
+        branch: { name: targetName },
+        endpoints: [{ type: "read_write" }],
+      }),
+    },
   );
+
+  if (!createRes.ok) {
+    return {
+      status: "failed",
+      logLines: [
+        `POST /projects/${projectId}/branches failed: ${createRes.message}`,
+      ],
+      output: { status: createRes.status, branchName: targetName },
+      error: {
+        provider: "neon",
+        projectId,
+        branchName: targetName,
+        message: createRes.message,
+      },
+    };
+  }
+
+  const created = createRes.detail ?? {};
+  const newBranch =
+    typeof created.branch === "object" && created.branch !== null
+      ? (created.branch as { id?: string; name?: string })
+      : {};
+
   return {
     status: "succeeded",
     logLines: [
-      `Authenticated to Neon project ${projectId}.`,
-      `Found ${branchesArr.length} existing branch${branchesArr.length === 1 ? "" : "es"}.`,
-      existing
-        ? `Branch '${target}' already exists; would re-use it for this environment.`
-        : `Branch '${target}' does not exist yet; would create it.`,
-      "(live: validated project access; branch creation deferred until Session 7)",
+      `Created Neon branch '${targetName}' (id=${newBranch.id ?? "unknown"}).`,
+      `Provisioned read_write endpoint; pooled URL available on the Neon dashboard.`,
     ],
     output: {
       projectId,
-      existingBranchCount: branchesArr.length,
-      targetBranchName: target,
-      targetBranchExists: Boolean(existing),
+      branchId: newBranch.id ?? null,
+      branchName: targetName,
+      created: true,
     },
   };
 }
 
+/**
+ * db.migrate still can't run in a serverless function (no shell, no Postgres
+ * client baked in). We surface the migrate command and the resolved pooled
+ * URL placeholder so the operator (or a future GitHub Actions runner) can
+ * replay it.
+ */
 export async function liveDbMigrate(
   ctx: LiveStageContext,
 ): Promise<StageOutcome> {
-  // db.migrate requires a shell environment (running pnpm db:push / prisma
-  // migrate deploy) — not feasible from a serverless function. We surface
-  // the command the operator (or a future GitHub Actions runner) should run.
   return {
     status: "succeeded",
     logLines: [

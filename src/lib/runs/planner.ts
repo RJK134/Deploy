@@ -25,6 +25,7 @@ export interface RunPlan {
     githubOwner: string;
     githubRepo: string;
     defaultBranch: string | null;
+    customDomain: string | null;
   };
   commands: BlueprintDefinition["commands"];
   envVars: ResolvedEnvVar[];
@@ -43,6 +44,7 @@ export function planRun(args: {
     githubOwner: string;
     githubRepo: string;
     defaultBranch: string | null;
+    customDomain?: string | null;
   };
   environment: Environment;
 }): RunPlan {
@@ -102,7 +104,14 @@ export function planRun(args: {
     blueprintName: blueprint.name,
     framework: blueprint.framework,
     environment,
-    project,
+    project: {
+      id: project.id,
+      slug: project.slug,
+      githubOwner: project.githubOwner,
+      githubRepo: project.githubRepo,
+      defaultBranch: project.defaultBranch,
+      customDomain: project.customDomain ?? null,
+    },
     commands: blueprint.commands,
     envVars,
     stages,

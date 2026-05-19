@@ -74,6 +74,7 @@ export async function createDryRunAction(formData: FormData): Promise<void> {
       githubOwner: project.githubOwner,
       githubRepo: project.githubRepo,
       defaultBranch: project.defaultBranch,
+      customDomain: project.customDomain,
     },
     blueprint: blueprint.definition,
     environment,

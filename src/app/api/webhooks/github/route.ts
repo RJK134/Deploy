@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { recordAudit } from "@/lib/db/audit";
 import { recordWebhookEvent } from "@/lib/db/webhooks";
 import { env } from "@/lib/env";
+import { dispatchGithubWebhook } from "@/lib/webhooks/github-dispatcher";
 import { verifyHmacSha256 } from "@/lib/webhooks/hmac";
 
 export const runtime = "nodejs";
@@ -67,5 +68,22 @@ export async function POST(req: Request) {
     metadata: { source: "github", eventType, deliveryId },
   });
 
-  return NextResponse.json({ ok: true, id });
+  let dispatchSummary: { ignored: boolean; reason?: string; runId?: string } = {
+    ignored: true,
+    reason: "no-dispatch-attempted",
+  };
+  try {
+    dispatchSummary = await dispatchGithubWebhook({
+      eventType,
+      payload,
+      webhookEventId: id,
+    });
+  } catch (err) {
+    dispatchSummary = {
+      ignored: true,
+      reason: `dispatch-threw:${err instanceof Error ? err.message : "unknown"}`,
+    };
+  }
+
+  return NextResponse.json({ ok: true, id, dispatch: dispatchSummary });
 }
