@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 
 import { env } from "@/lib/env";
+import { runBuildMonitorChecks } from "@/lib/fixbot/build-analyzer";
 import { runHttpMonitorChecks } from "@/lib/fixbot/http-analyzer";
+import { runWorkflowMonitorChecks } from "@/lib/fixbot/workflow-analyzer";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,7 +20,6 @@ function checkAuth(req: Request): { ok: boolean; reason?: string } {
   }
   const auth = req.headers.get("authorization") ?? "";
   const expected = `Bearer ${secret}`;
-  // Constant-time compare (lengths must match first).
   if (auth.length !== expected.length) return { ok: false, reason: "auth-mismatch" };
   let diff = 0;
   for (let i = 0; i < auth.length; i++) {
@@ -36,9 +37,22 @@ export async function GET(req: Request) {
       { status: env.CRON_SECRET ? 401 : 503 },
     );
   }
-  const report = await runHttpMonitorChecks({ actor: "cron:http-monitors" });
-  return NextResponse.json({ ok: true, report });
+  const actor = "cron:monitors";
+  const [http, build, workflow] = await Promise.all([
+    runHttpMonitorChecks({ actor }).catch((err) => ({
+      error: err instanceof Error ? err.message : "unknown",
+    })),
+    runBuildMonitorChecks({ actor }).catch((err) => ({
+      error: err instanceof Error ? err.message : "unknown",
+    })),
+    runWorkflowMonitorChecks({ actor }).catch((err) => ({
+      error: err instanceof Error ? err.message : "unknown",
+    })),
+  ]);
+  return NextResponse.json({
+    ok: true,
+    reports: { http, build, workflow },
+  });
 }
 
-// POST is supported too in case the invoker prefers it.
 export const POST = GET;

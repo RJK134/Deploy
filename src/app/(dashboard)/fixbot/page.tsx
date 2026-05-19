@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   Activity,
   Boxes,
@@ -20,23 +21,29 @@ import {
   listIncidents,
   listMonitors,
 } from "@/lib/db/fixbot";
+import { listProjects } from "@/lib/db/projects";
 import { AUTONOMY_BLURB } from "@/lib/fixbot/autonomy";
 import { relativeTime } from "@/lib/format/relative-time";
+
+import { createMonitorAction, deleteMonitorAction } from "./actions";
+import { MonitorForm } from "./_components/monitor-form";
+import { DeleteMonitorButton } from "./_components/monitor-row-actions";
 
 export const dynamic = "force-dynamic";
 
 export default async function FixBotPage() {
-  const [monitors, incidents, total] = await Promise.all([
+  const [monitors, incidents, total, projects] = await Promise.all([
     listMonitors(),
     listIncidents(50),
     countIncidents(),
+    listProjects(),
   ]);
 
   return (
     <PageShell
       eyebrow="Operations"
       title="Fix Bot"
-      description="Health monitors, incidents, diagnoses, and gated remediations. Schema and operations layer are wired this session; live analyzers + webhook-triggered detection ship in a later session."
+      description="Health monitors, incidents, diagnoses, and gated remediations. HTTP / build / workflow analyzers run on Vercel cron every 5 minutes."
       actions={
         <Badge variant="outline" className="font-mono text-[10px]">
           {total} incidents · {monitors.length} monitors
@@ -67,6 +74,18 @@ export default async function FixBotPage() {
       </Card>
 
       <Card>
+        <CardHeader>
+          <CardTitle>Add a monitor</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <MonitorForm
+            action={createMonitorAction}
+            projects={projects.map((p) => ({ id: p.id, slug: p.slug }))}
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle>Monitors</CardTitle>
           <Badge variant="outline" className="font-mono text-[10px]">
@@ -77,9 +96,7 @@ export default async function FixBotPage() {
           {monitors.length === 0 ? (
             <p className="flex items-center gap-2 text-sm text-muted-foreground">
               <CircleDashed className="h-4 w-4" aria-hidden />
-              No monitors configured yet. A later session adds HTTP, build,
-              migration, env, domain, and workflow analyzers that write rows
-              here automatically.
+              No monitors configured yet. Add one above to start tracking.
             </p>
           ) : (
             <ul className="space-y-2 text-sm">
@@ -109,6 +126,11 @@ export default async function FixBotPage() {
                       ? `last ${relativeTime(m.lastCheckedAt)}`
                       : "never"}
                   </span>
+                  <DeleteMonitorButton
+                    action={deleteMonitorAction}
+                    id={m.id}
+                    label={m.label}
+                  />
                 </li>
               ))}
             </ul>
@@ -127,9 +149,9 @@ export default async function FixBotPage() {
           {incidents.length === 0 ? (
             <p className="flex items-center gap-2 text-sm text-muted-foreground">
               <Sparkles className="h-4 w-4" aria-hidden />
-              No incidents yet. When analyzers ship, monitors flipping to
-              warning/down will open rows here, then attach diagnoses and
-              autonomy-gated remediations.
+              No incidents yet. When an analyzer flips a monitor to{" "}
+              <code className="font-mono">down</code> for the first time, a row
+              lands here.
             </p>
           ) : (
             <div className="overflow-x-auto">
@@ -149,7 +171,14 @@ export default async function FixBotPage() {
                       <td className="px-2 py-1 text-xs text-muted-foreground">
                         {relativeTime(i.openedAt)}
                       </td>
-                      <td className="px-2 py-1">{i.title}</td>
+                      <td className="px-2 py-1">
+                        <Link
+                          href={`/fixbot/${i.id}`}
+                          className="hover:underline"
+                        >
+                          {i.title}
+                        </Link>
+                      </td>
                       <td className="px-2 py-1 font-mono text-xs">
                         <span className="inline-flex items-center gap-1">
                           <Boxes
@@ -162,18 +191,19 @@ export default async function FixBotPage() {
                       <td className="px-2 py-1">
                         <RunStatusPill
                           status={
-                            i.status === "open" || i.status === "diagnosed"
-                              ? "running"
-                              : i.status === "remediating"
-                                ? "running"
-                                : i.status === "resolved"
-                                  ? "succeeded"
-                                  : "skipped"
+                            i.status === "resolved"
+                              ? "succeeded"
+                              : i.status === "dismissed"
+                                ? "skipped"
+                                : "running"
                           }
                         />
                       </td>
                       <td className="px-2 py-1">
-                        <Badge variant="outline" className="font-mono text-[10px]">
+                        <Badge
+                          variant="outline"
+                          className="font-mono text-[10px]"
+                        >
                           {i.autonomy}
                         </Badge>
                       </td>
@@ -185,9 +215,8 @@ export default async function FixBotPage() {
           )}
           <Separator className="my-3" />
           <p className="text-xs text-muted-foreground">
-            Fix Bot is intentionally inert until the operator wires it up. The
-            schema is in place so analyzers can land in a follow-up without
-            another migration.
+            Click an incident title to open its detail page with diagnoses,
+            remediation chain, and dismiss/resolve actions.
           </p>
         </CardContent>
       </Card>
