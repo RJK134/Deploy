@@ -57,9 +57,23 @@ function buildConfig(kind: MonitorKind, formData: FormData): Record<string, unkn
       const branch = nonEmptyString(formData.get("workflowBranch"));
       return buildMonitorConfig("workflow", { workflowId, branch });
     }
+    case "env": {
+      const targetRaw = formData.get("envTarget");
+      const target =
+        typeof targetRaw === "string" &&
+        (targetRaw === "production" ||
+          targetRaw === "preview" ||
+          targetRaw === "development")
+          ? targetRaw
+          : "production";
+      const requiredKeys = nonEmptyString(formData.get("envRequiredKeys"));
+      return buildMonitorConfig("env", { target, requiredKeys });
+    }
+    case "domain": {
+      const domain = nonEmptyString(formData.get("domainOverride"));
+      return buildMonitorConfig("domain", { domain });
+    }
     case "migration":
-    case "env":
-    case "domain":
       return buildMonitorConfig(kind, {});
   }
 }

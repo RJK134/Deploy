@@ -70,8 +70,8 @@ export function MonitorForm({ action, projects }: MonitorFormProps) {
             <option value="http">http</option>
             <option value="build">build</option>
             <option value="workflow">workflow</option>
-            <option value="env">env (no analyzer yet)</option>
-            <option value="domain">domain (no analyzer yet)</option>
+            <option value="env">env</option>
+            <option value="domain">domain</option>
             <option value="migration">migration (no analyzer yet)</option>
           </select>
         </label>
@@ -175,6 +175,60 @@ export function MonitorForm({ action, projects }: MonitorFormProps) {
           </label>
           <p className="self-end text-xs text-muted-foreground">
             Requires the GitHub PAT verified.
+          </p>
+        </div>
+      ) : null}
+
+      {kind === "env" ? (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <label className="space-y-1">
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              Target
+            </span>
+            <select
+              name="envTarget"
+              defaultValue="production"
+              className={inputClass}
+            >
+              <option value="production">production</option>
+              <option value="preview">preview</option>
+              <option value="development">development</option>
+            </select>
+          </label>
+          <label className="space-y-1 sm:col-span-2">
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              Required keys (optional, comma-separated)
+            </span>
+            <input
+              name="envRequiredKeys"
+              placeholder="e.g. DATABASE_URL, NEXTAUTH_SECRET"
+              className={inputClass}
+            />
+          </label>
+          <p className="text-xs text-muted-foreground sm:col-span-3">
+            Empty = use the project&rsquo;s blueprint env-var manifest.
+            Requires Vercel verified + the project to have a Vercel project ID
+            set.
+          </p>
+        </div>
+      ) : null}
+
+      {kind === "domain" ? (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <label className="space-y-1 sm:col-span-3">
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              Domain override (optional)
+            </span>
+            <input
+              name="domainOverride"
+              placeholder="app.example.com"
+              className={inputClass}
+            />
+          </label>
+          <p className="text-xs text-muted-foreground sm:col-span-3">
+            Empty = monitor the project&rsquo;s configured{" "}
+            <code className="font-mono">customDomain</code>. The analyzer
+            checks both attachment and Vercel-side verification status.
           </p>
         </div>
       ) : null}

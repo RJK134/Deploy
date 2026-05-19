@@ -8,53 +8,37 @@ import { draftRemediation } from "@/lib/db/remediations";
 import { fixbotIncidents, fixbotMonitors } from "@/lib/db/schema";
 import { probeJson } from "@/lib/providers/probe";
 
-import { classifyActionsRun } from "./classifiers";
+import {
+  classifyDomain,
+  type VercelDomainLite,
+} from "./classifiers";
 import { getProjectRow, getVerifiedCredential } from "./credentials";
 import { bumpReport, ZERO_REPORT, type AnalyzerReport } from "./types";
 
-interface WorkflowMonitorConfig {
-  /** Optional: workflow file path or id, e.g. 'deployops.yml'. Empty = all workflows. */
-  workflowId?: string;
-  /** Optional: branch filter, default project.defaultBranch. */
-  branch?: string;
-  /** Conclusions treated as 'down' triggers. */
-  failureConclusions?: string[];
+interface DomainMonitorConfig {
+  /** When set, overrides project.customDomain. Useful for env-specific domains. */
+  domain?: string;
 }
 
-interface ActionsRun {
-  id?: number;
-  status?: string;
-  conclusion?: string | null;
-  html_url?: string;
-  head_branch?: string;
-  name?: string;
-  created_at?: string;
-}
-
-const DEFAULT_FAILURES = ["failure", "timed_out", "startup_failure"];
-
-function asRunArray(value: unknown): ActionsRun[] {
+function asDomainArray(value: unknown): VercelDomainLite[] {
   if (!value || typeof value !== "object") return [];
   const detail = value as Record<string, unknown>;
-  if (Array.isArray(detail.workflow_runs)) {
-    return detail.workflow_runs as ActionsRun[];
-  }
+  if (Array.isArray(detail.domains)) return detail.domains as VercelDomainLite[];
   return [];
 }
 
-
-export async function runWorkflowMonitorChecks(args: {
+export async function runDomainMonitorChecks(args: {
   actor: string;
 }): Promise<AnalyzerReport> {
   const monitors = await db
     .select()
     .from(fixbotMonitors)
-    .where(eq(fixbotMonitors.kind, "workflow"));
+    .where(eq(fixbotMonitors.kind, "domain"));
 
   const report: AnalyzerReport = { ...ZERO_REPORT };
   if (monitors.length === 0) return report;
 
-  const token = await getVerifiedCredential("github_pat");
+  const token = await getVerifiedCredential("vercel");
   if (!token) {
     for (const m of monitors) {
       await db
@@ -76,7 +60,7 @@ export async function runWorkflowMonitorChecks(args: {
       continue;
     }
     const project = await getProjectRow(monitor.projectId);
-    if (!project) {
+    if (!project || !project.vercelProjectId) {
       await db
         .update(fixbotMonitors)
         .set({ status: "warning", lastCheckedAt: sql`now()` })
@@ -85,36 +69,23 @@ export async function runWorkflowMonitorChecks(args: {
       continue;
     }
 
-    const cfg: WorkflowMonitorConfig =
+    const cfg: DomainMonitorConfig =
       typeof monitor.config === "object" && monitor.config !== null
-        ? (monitor.config as WorkflowMonitorConfig)
+        ? (monitor.config as DomainMonitorConfig)
         : {};
-    const failureConclusions =
-      Array.isArray(cfg.failureConclusions) &&
-      cfg.failureConclusions.length > 0
-        ? cfg.failureConclusions.filter(
-            (s): s is string => typeof s === "string",
-          )
-        : DEFAULT_FAILURES;
-    const branch =
-      typeof cfg.branch === "string" && cfg.branch.length > 0
-        ? cfg.branch
-        : (project.defaultBranch ?? "main");
+    const desired =
+      typeof cfg.domain === "string" && cfg.domain.length > 0
+        ? cfg.domain
+        : project.customDomain;
 
-    const pathRoot = `/repos/${encodeURIComponent(project.githubOwner)}/${encodeURIComponent(project.githubRepo)}/actions`;
-    const path = cfg.workflowId
-      ? `${pathRoot}/workflows/${encodeURIComponent(cfg.workflowId)}/runs`
-      : `${pathRoot}/runs`;
-    const url = new URL(`https://api.github.com${path}`);
-    url.searchParams.set("branch", branch);
-    url.searchParams.set("per_page", "1");
-
+    const url = new URL(
+      `https://api.vercel.com/v9/projects/${encodeURIComponent(project.vercelProjectId)}/domains`,
+    );
+    if (project.vercelTeamId) url.searchParams.set("teamId", project.vercelTeamId);
     const probe = await probeJson(url.toString(), {
       headers: {
         Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "deployops-console",
+        Accept: "application/json",
       },
     });
 
@@ -127,11 +98,10 @@ export async function runWorkflowMonitorChecks(args: {
       continue;
     }
 
-    const runs = asRunArray(probe.detail);
-    const latest = runs[0];
-    const { status: nextStatus, reason } = classifyActionsRun(
-      latest,
-      failureConclusions,
+    const attached = asDomainArray(probe.detail);
+    const { status: nextStatus, reason, verified } = classifyDomain(
+      desired,
+      attached,
     );
     const previousStatus = monitor.status;
 
@@ -142,13 +112,16 @@ export async function runWorkflowMonitorChecks(args: {
     bumpReport(report, nextStatus);
 
     if (nextStatus === "down" && previousStatus !== "down") {
+      const isAttached = verified !== false ? false : Boolean(
+        attached.find((d) => d.name === desired),
+      );
       const [incident] = await db
         .insert(fixbotIncidents)
         .values({
           monitorId: monitor.id,
           projectId: monitor.projectId,
-          title: `Workflow failed: ${monitor.label}`,
-          summary: `${reason}. ${latest?.html_url ? `Run: ${latest.html_url}` : ""}`.trim(),
+          title: `Domain ${isAttached ? "verification" : "attachment"} pending: ${desired}`,
+          summary: reason,
           status: "open",
           autonomy: "approval-required",
         })
@@ -161,24 +134,24 @@ export async function runWorkflowMonitorChecks(args: {
         metadata: {
           monitorId: monitor.id,
           monitorLabel: monitor.label,
-          kind: "workflow",
-          runId: latest?.id ?? null,
-          conclusion: latest?.conclusion ?? null,
-          htmlUrl: latest?.html_url ?? null,
+          kind: "domain",
+          domain: desired,
+          attached: isAttached,
+          verified,
         },
       });
       await draftRemediation({
         incidentId: incident.id,
-        action: "workflow.rerun",
-        description: `Open the failed GitHub Actions run${latest?.html_url ? ` at ${latest.html_url}` : ""}, inspect the failing step, then either re-run from the Actions tab (transient failures) or push a fix to ${branch}.`,
+        action: isAttached ? "domain.verify" : "domain.attach",
+        description: isAttached
+          ? `Add the DNS record Vercel is expecting for '${desired}' (check the Vercel domain settings for the exact record). Re-run the monitor once propagated.`
+          : `Attach '${desired}' to Vercel project ${project.vercelProjectId} via /access or the Vercel dashboard, then add the DNS record Vercel returns.`,
         payload: {
-          provider: "github",
-          owner: project.githubOwner,
-          repo: project.githubRepo,
-          branch,
-          runId: latest?.id ?? null,
-          conclusion: latest?.conclusion ?? null,
-          htmlUrl: latest?.html_url ?? null,
+          provider: "vercel",
+          vercelProjectId: project.vercelProjectId,
+          domain: desired,
+          attached: isAttached,
+          verified,
         },
         autonomy: "approval-required",
         actor: args.actor,
@@ -188,7 +161,7 @@ export async function runWorkflowMonitorChecks(args: {
 
   await recordAudit({
     actor: args.actor,
-    action: "fixbot.workflow-checks.completed",
+    action: "fixbot.domain-checks.completed",
     target: null,
     metadata: { ...report },
   });

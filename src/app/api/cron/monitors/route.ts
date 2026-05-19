@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 
 import { env } from "@/lib/env";
 import { runBuildMonitorChecks } from "@/lib/fixbot/build-analyzer";
+import { runDomainMonitorChecks } from "@/lib/fixbot/domain-analyzer";
+import { runEnvMonitorChecks } from "@/lib/fixbot/env-analyzer";
 import { runHttpMonitorChecks } from "@/lib/fixbot/http-analyzer";
 import { runWorkflowMonitorChecks } from "@/lib/fixbot/workflow-analyzer";
 
@@ -38,20 +40,19 @@ export async function GET(req: Request) {
     );
   }
   const actor = "cron:monitors";
-  const [http, build, workflow] = await Promise.all([
-    runHttpMonitorChecks({ actor }).catch((err) => ({
-      error: err instanceof Error ? err.message : "unknown",
-    })),
-    runBuildMonitorChecks({ actor }).catch((err) => ({
-      error: err instanceof Error ? err.message : "unknown",
-    })),
-    runWorkflowMonitorChecks({ actor }).catch((err) => ({
-      error: err instanceof Error ? err.message : "unknown",
-    })),
+  const catchErr = (err: unknown) => ({
+    error: err instanceof Error ? err.message : "unknown",
+  });
+  const [http, build, workflow, envReport, domain] = await Promise.all([
+    runHttpMonitorChecks({ actor }).catch(catchErr),
+    runBuildMonitorChecks({ actor }).catch(catchErr),
+    runWorkflowMonitorChecks({ actor }).catch(catchErr),
+    runEnvMonitorChecks({ actor }).catch(catchErr),
+    runDomainMonitorChecks({ actor }).catch(catchErr),
   ]);
   return NextResponse.json({
     ok: true,
-    reports: { http, build, workflow },
+    reports: { http, build, workflow, env: envReport, domain },
   });
 }
 

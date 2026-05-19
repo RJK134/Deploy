@@ -9,6 +9,8 @@ export interface ProjectRow {
   vercelTeamId: string | null;
   neonProjectId: string | null;
   defaultBranch: string | null;
+  blueprintId: string | null;
+  customDomain: string | null;
 }
 
 export interface AnalyzerReport {

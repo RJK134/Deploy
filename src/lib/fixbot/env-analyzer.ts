@@ -2,59 +2,58 @@ import "server-only";
 
 import { eq, sql } from "drizzle-orm";
 
+import { getBlueprintById } from "@/lib/db/blueprints";
 import { db } from "@/lib/db/client";
 import { recordAudit } from "@/lib/db/audit";
 import { draftRemediation } from "@/lib/db/remediations";
 import { fixbotIncidents, fixbotMonitors } from "@/lib/db/schema";
 import { probeJson } from "@/lib/providers/probe";
 
-import { classifyActionsRun } from "./classifiers";
+import { classifyEnvKeys, type EnvTarget } from "./classifiers";
 import { getProjectRow, getVerifiedCredential } from "./credentials";
 import { bumpReport, ZERO_REPORT, type AnalyzerReport } from "./types";
 
-interface WorkflowMonitorConfig {
-  /** Optional: workflow file path or id, e.g. 'deployops.yml'. Empty = all workflows. */
-  workflowId?: string;
-  /** Optional: branch filter, default project.defaultBranch. */
-  branch?: string;
-  /** Conclusions treated as 'down' triggers. */
-  failureConclusions?: string[];
+interface EnvMonitorConfig {
+  target?: EnvTarget;
+  /** When set, overrides the blueprint's env-var manifest. */
+  requiredKeys?: string[];
 }
 
-interface ActionsRun {
-  id?: number;
-  status?: string;
-  conclusion?: string | null;
-  html_url?: string;
-  head_branch?: string;
-  name?: string;
-  created_at?: string;
+interface VercelEnvVar {
+  key?: string;
+  target?: string[];
 }
 
-const DEFAULT_FAILURES = ["failure", "timed_out", "startup_failure"];
-
-function asRunArray(value: unknown): ActionsRun[] {
+function asEnvArray(value: unknown): VercelEnvVar[] {
   if (!value || typeof value !== "object") return [];
   const detail = value as Record<string, unknown>;
-  if (Array.isArray(detail.workflow_runs)) {
-    return detail.workflow_runs as ActionsRun[];
-  }
+  if (Array.isArray(detail.envs)) return detail.envs as VercelEnvVar[];
+  if (Array.isArray(detail)) return detail as VercelEnvVar[];
   return [];
 }
 
+function asTarget(value: unknown): EnvTarget {
+  if (
+    typeof value === "string" &&
+    (value === "production" || value === "preview" || value === "development")
+  ) {
+    return value;
+  }
+  return "production";
+}
 
-export async function runWorkflowMonitorChecks(args: {
+export async function runEnvMonitorChecks(args: {
   actor: string;
 }): Promise<AnalyzerReport> {
   const monitors = await db
     .select()
     .from(fixbotMonitors)
-    .where(eq(fixbotMonitors.kind, "workflow"));
+    .where(eq(fixbotMonitors.kind, "env"));
 
   const report: AnalyzerReport = { ...ZERO_REPORT };
   if (monitors.length === 0) return report;
 
-  const token = await getVerifiedCredential("github_pat");
+  const token = await getVerifiedCredential("vercel");
   if (!token) {
     for (const m of monitors) {
       await db
@@ -76,7 +75,7 @@ export async function runWorkflowMonitorChecks(args: {
       continue;
     }
     const project = await getProjectRow(monitor.projectId);
-    if (!project) {
+    if (!project || !project.vercelProjectId) {
       await db
         .update(fixbotMonitors)
         .set({ status: "warning", lastCheckedAt: sql`now()` })
@@ -85,36 +84,41 @@ export async function runWorkflowMonitorChecks(args: {
       continue;
     }
 
-    const cfg: WorkflowMonitorConfig =
+    const cfg: EnvMonitorConfig =
       typeof monitor.config === "object" && monitor.config !== null
-        ? (monitor.config as WorkflowMonitorConfig)
+        ? (monitor.config as EnvMonitorConfig)
         : {};
-    const failureConclusions =
-      Array.isArray(cfg.failureConclusions) &&
-      cfg.failureConclusions.length > 0
-        ? cfg.failureConclusions.filter(
-            (s): s is string => typeof s === "string",
-          )
-        : DEFAULT_FAILURES;
-    const branch =
-      typeof cfg.branch === "string" && cfg.branch.length > 0
-        ? cfg.branch
-        : (project.defaultBranch ?? "main");
+    const target = asTarget(cfg.target);
 
-    const pathRoot = `/repos/${encodeURIComponent(project.githubOwner)}/${encodeURIComponent(project.githubRepo)}/actions`;
-    const path = cfg.workflowId
-      ? `${pathRoot}/workflows/${encodeURIComponent(cfg.workflowId)}/runs`
-      : `${pathRoot}/runs`;
-    const url = new URL(`https://api.github.com${path}`);
-    url.searchParams.set("branch", branch);
-    url.searchParams.set("per_page", "1");
+    // Resolve required keys: explicit list wins; otherwise pull from the
+    // project's blueprint env-var manifest.
+    let requiredKeys: string[] = [];
+    if (Array.isArray(cfg.requiredKeys) && cfg.requiredKeys.length > 0) {
+      requiredKeys = cfg.requiredKeys.filter(
+        (k): k is string => typeof k === "string" && k.length > 0,
+      );
+    } else if (project.blueprintId) {
+      const bp = await getBlueprintById(project.blueprintId);
+      if (bp) requiredKeys = bp.definition.envVars.map((v) => v.key);
+    }
 
+    if (requiredKeys.length === 0) {
+      await db
+        .update(fixbotMonitors)
+        .set({ status: "warning", lastCheckedAt: sql`now()` })
+        .where(eq(fixbotMonitors.id, monitor.id));
+      bumpReport(report, "warning");
+      continue;
+    }
+
+    const url = new URL(
+      `https://api.vercel.com/v10/projects/${encodeURIComponent(project.vercelProjectId)}/env`,
+    );
+    if (project.vercelTeamId) url.searchParams.set("teamId", project.vercelTeamId);
     const probe = await probeJson(url.toString(), {
       headers: {
         Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "deployops-console",
+        Accept: "application/json",
       },
     });
 
@@ -127,11 +131,19 @@ export async function runWorkflowMonitorChecks(args: {
       continue;
     }
 
-    const runs = asRunArray(probe.detail);
-    const latest = runs[0];
-    const { status: nextStatus, reason } = classifyActionsRun(
-      latest,
-      failureConclusions,
+    const envs = asEnvArray(probe.detail);
+    const presentKeys = new Set(
+      envs
+        .filter((e) => {
+          if (!e.target) return true;
+          return Array.isArray(e.target) && e.target.includes(target);
+        })
+        .map((e) => e.key)
+        .filter((k): k is string => typeof k === "string"),
+    );
+    const { status: nextStatus, missingKeys } = classifyEnvKeys(
+      requiredKeys,
+      presentKeys,
     );
     const previousStatus = monitor.status;
 
@@ -147,8 +159,8 @@ export async function runWorkflowMonitorChecks(args: {
         .values({
           monitorId: monitor.id,
           projectId: monitor.projectId,
-          title: `Workflow failed: ${monitor.label}`,
-          summary: `${reason}. ${latest?.html_url ? `Run: ${latest.html_url}` : ""}`.trim(),
+          title: `Missing env vars on ${project.slug} (${target})`,
+          summary: `Vercel project ${project.vercelProjectId} is missing ${missingKeys.length} required env var${missingKeys.length === 1 ? "" : "s"}: ${missingKeys.join(", ")}.`,
           status: "open",
           autonomy: "approval-required",
         })
@@ -161,24 +173,20 @@ export async function runWorkflowMonitorChecks(args: {
         metadata: {
           monitorId: monitor.id,
           monitorLabel: monitor.label,
-          kind: "workflow",
-          runId: latest?.id ?? null,
-          conclusion: latest?.conclusion ?? null,
-          htmlUrl: latest?.html_url ?? null,
+          kind: "env",
+          target,
+          missingKeys,
         },
       });
       await draftRemediation({
         incidentId: incident.id,
-        action: "workflow.rerun",
-        description: `Open the failed GitHub Actions run${latest?.html_url ? ` at ${latest.html_url}` : ""}, inspect the failing step, then either re-run from the Actions tab (transient failures) or push a fix to ${branch}.`,
+        action: "env.add",
+        description: `Add ${missingKeys.length} env var${missingKeys.length === 1 ? "" : "s"} to the Vercel project for the '${target}' target: ${missingKeys.join(", ")}.`,
         payload: {
-          provider: "github",
-          owner: project.githubOwner,
-          repo: project.githubRepo,
-          branch,
-          runId: latest?.id ?? null,
-          conclusion: latest?.conclusion ?? null,
-          htmlUrl: latest?.html_url ?? null,
+          provider: "vercel",
+          vercelProjectId: project.vercelProjectId,
+          target,
+          missingKeys,
         },
         autonomy: "approval-required",
         actor: args.actor,
@@ -188,7 +196,7 @@ export async function runWorkflowMonitorChecks(args: {
 
   await recordAudit({
     actor: args.actor,
-    action: "fixbot.workflow-checks.completed",
+    action: "fixbot.env-checks.completed",
     target: null,
     metadata: { ...report },
   });

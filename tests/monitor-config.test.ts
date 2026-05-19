@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildBuildMonitorConfig,
+  buildDomainMonitorConfig,
+  buildEnvMonitorConfig,
   buildHttpMonitorConfig,
   buildMonitorConfig,
   buildWorkflowMonitorConfig,
@@ -122,6 +124,91 @@ describe("buildWorkflowMonitorConfig", () => {
   });
 });
 
+describe("buildEnvMonitorConfig", () => {
+  it("defaults target to 'production' when unset", () => {
+    expect(buildEnvMonitorConfig({})).toEqual({ target: "production" });
+  });
+
+  it("accepts the three valid targets", () => {
+    expect(buildEnvMonitorConfig({ target: "preview" })).toEqual({
+      target: "preview",
+    });
+    expect(buildEnvMonitorConfig({ target: "development" })).toEqual({
+      target: "development",
+    });
+  });
+
+  it("falls back to 'production' on unknown target", () => {
+    expect(
+      buildEnvMonitorConfig({
+        target: "staging" as unknown as "production",
+      }),
+    ).toEqual({ target: "production" });
+  });
+
+  it("parses requiredKeys as comma-separated", () => {
+    expect(
+      buildEnvMonitorConfig({
+        requiredKeys: "DATABASE_URL, NEXTAUTH_SECRET, NODE_ENV",
+      }),
+    ).toMatchObject({
+      requiredKeys: ["DATABASE_URL", "NEXTAUTH_SECRET", "NODE_ENV"],
+    });
+  });
+
+  it("omits requiredKeys when empty/whitespace", () => {
+    expect(buildEnvMonitorConfig({ requiredKeys: "" })).toEqual({
+      target: "production",
+    });
+    expect(buildEnvMonitorConfig({ requiredKeys: "   " })).toEqual({
+      target: "production",
+    });
+  });
+
+  it("rejects lowercase or invalid env-var names", () => {
+    expect(() =>
+      buildEnvMonitorConfig({ requiredKeys: "lowercase" }),
+    ).toThrow();
+    expect(() =>
+      buildEnvMonitorConfig({ requiredKeys: "BAD-NAME" }),
+    ).toThrow();
+    expect(() =>
+      buildEnvMonitorConfig({ requiredKeys: "1STARTS_WITH_DIGIT" }),
+    ).toThrow();
+  });
+
+  it("rejects env-var names longer than 64 chars", () => {
+    const longName = "A".repeat(65);
+    expect(() =>
+      buildEnvMonitorConfig({ requiredKeys: longName }),
+    ).toThrow();
+  });
+});
+
+describe("buildDomainMonitorConfig", () => {
+  it("returns empty config when domain unset (use project.customDomain)", () => {
+    expect(buildDomainMonitorConfig({})).toEqual({});
+    expect(buildDomainMonitorConfig({ domain: "" })).toEqual({});
+    expect(buildDomainMonitorConfig({ domain: "   " })).toEqual({});
+  });
+
+  it("lowercases + persists a valid override", () => {
+    expect(buildDomainMonitorConfig({ domain: "App.Example.COM" })).toEqual({
+      domain: "app.example.com",
+    });
+  });
+
+  it("rejects malformed domains", () => {
+    expect(() => buildDomainMonitorConfig({ domain: "localhost" })).toThrow();
+    expect(() =>
+      buildDomainMonitorConfig({ domain: "https://app.example.com" }),
+    ).toThrow();
+    expect(() =>
+      buildDomainMonitorConfig({ domain: "app.example.com/path" }),
+    ).toThrow();
+  });
+});
+
 describe("buildMonitorConfig (kind dispatch)", () => {
   it("dispatches by kind", () => {
     expect(
@@ -129,11 +216,11 @@ describe("buildMonitorConfig (kind dispatch)", () => {
     ).toMatchObject({ expectedStatus: 200 });
     expect(buildMonitorConfig("build", {})).toEqual({ inspectCount: 1 });
     expect(buildMonitorConfig("workflow", {})).toEqual({});
+    expect(buildMonitorConfig("env", {})).toEqual({ target: "production" });
+    expect(buildMonitorConfig("domain", {})).toEqual({});
   });
 
-  it("returns {} for the analyzer-less kinds", () => {
-    expect(buildMonitorConfig("env", {})).toEqual({});
-    expect(buildMonitorConfig("domain", {})).toEqual({});
+  it("returns {} for migration (analyzer-less)", () => {
     expect(buildMonitorConfig("migration", {})).toEqual({});
   });
 });
